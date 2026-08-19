@@ -1,0 +1,22 @@
+{
+  "name": "agentbet-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Deploy and live-verification scripts for the AgentBet Intelligent Contract (the web app has its own package under web/)",
+  "scripts": {
+    "deploy": "tsx scripts/deploy.ts",
+    "probe": "tsx scripts/probe_sources.ts",
+    "lifecycle": "tsx scripts/live_lifecycle.ts",
+    "state": "tsx scripts/read_state.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "dotenv": "^16.4.5",
+    "genlayer-js": "^1.1.8",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "viem": "^2.21.0"
+  }
+}

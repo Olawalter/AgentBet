@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "installCommand": "npm install",
+  "build": {
+    "env": {
+      "NEXT_PUBLIC_CONTRACT_ADDRESS": "0x98DEd2f0341f0aedA6bA0Bbff432382AD10928A0",
+      "NEXT_PUBLIC_GENLAYER_RPC_URL": "https://studio.genlayer.com/api"
+    }
+  }
+}

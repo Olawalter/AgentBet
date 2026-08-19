@@ -1,0 +1,11 @@
+{
+  "name": "AgentBet",
+  "network": "studionet",
+  "chainId": 61999,
+  "rpcUrl": "https://studio.genlayer.com/api",
+  "contractAddress": "0x98DEd2f0341f0aedA6bA0Bbff432382AD10928A0",
+  "deployTxHash": "0x09bec6bb1a2b3b652800403ecd525bec09a4e3d58924488e4b140246722aab54",
+  "contractFile": "contracts/agentbet.py",
+  "deployedAt": "2026-08-18T22:54:35.878Z",
+  "explorer": "https://explorer-studio.genlayer.com/address/0x98DEd2f0341f0aedA6bA0Bbff432382AD10928A0"
+}

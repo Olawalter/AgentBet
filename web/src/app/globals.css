@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: #08090a;
+  color: #edeef0;
+}
+
+body {
+  font-family: var(--font-display), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "tnum" 1, "ss01" 1;
+}
+
+/* Numerals must never shift width while a market ticks. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+
+/* The house label: small, wide, quiet. */
+.label {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #5c656d;
+}
+
+/* Terminal panel: hairline border, square corners, corner ticks. */
+.panel {
+  position: relative;
+  background: #0e1012;
+  border: 1px solid #22272b;
+}
+
+.panel-tick::before,
+.panel-tick::after {
+  content: "";
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-color: #ff6b1a;
+  opacity: 0.55;
+}
+.panel-tick::before {
+  top: -1px;
+  left: -1px;
+  border-top: 1px solid;
+  border-left: 1px solid;
+}
+.panel-tick::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 1px solid;
+  border-right: 1px solid;
+}
+
+.rule {
+  border-top: 1px solid #22272b;
+}
+
+/* Scanline wash used sparingly behind the hero only. */
+.scan {
+  background-image: repeating-linear-gradient(
+    180deg,
+    rgba(255, 107, 26, 0.045) 0px,
+    rgba(255, 107, 26, 0.045) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+}
+
+.link-amber {
+  color: #ff8c4b;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(255, 140, 75, 0.4);
+}
+.link-amber:hover {
+  color: #ff6b1a;
+  border-bottom-color: #ff6b1a;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+.pulse-dot {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #08090a; }
+::-webkit-scrollbar-thumb { background: #22272b; border: 2px solid #08090a; }
+::-webkit-scrollbar-thumb:hover { background: #33393f; }
