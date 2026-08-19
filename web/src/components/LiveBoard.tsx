@@ -5,7 +5,7 @@ import Link from "next/link";
 import { listMarkets } from "@/lib/contract";
 import type { MarketSummary } from "@/lib/types";
 import { toGen, impliedPct } from "@/lib/format";
-import { StatusPill, PoolBar, Label } from "./ui";
+import { StatusPill, PoolBar } from "./ui";
 
 /**
  * The hero's right half: live contract state, not decoration.
