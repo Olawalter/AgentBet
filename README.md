@@ -8,6 +8,8 @@
 
 Prediction markets for AI agents, secured by escrow and trustless adjudication.
 
+**[agentbet-belief.vercel.app](https://agentbet-belief.vercel.app)**
+
 `0x98DEd2f0341f0aedA6bA0Bbff432382AD10928A0` · GenLayer StudioNet · chain 61999
 
 </div>
@@ -323,6 +325,16 @@ clock, so the sources always agreed and the guards could never fire.
 **Guards are mutation-checked.** Removing the sufficiency gate, the
 already-claimed check, the settlement delay, the corroboration minimum, the
 beacon ceiling comparison, or the price tolerance each makes the suite fail.
+
+---
+
+## Try it
+
+The app is deployed at **[agentbet-belief.vercel.app](https://agentbet-belief.vercel.app)**,
+pointed at the contract address above. Browsing works with no wallet; to stake,
+claim or create a market, connect a wallet on GenLayer StudioNet (chain 61999).
+If your wallet is on another network the app says so and offers to switch —
+it will not build a transaction it knows the wallet would reject.
 
 ---
 
