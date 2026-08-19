@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "agentbet-web",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "web/node_modules/next/dist/bin/next",
+        "dev",
+        "web",
+        "--port",
+        "3000"
+      ],
+      "port": 3000
+    }
+  ]
+}

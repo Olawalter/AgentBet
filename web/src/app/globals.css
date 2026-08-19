@@ -18,26 +18,31 @@ body {
   font-feature-settings: "tnum" 1, "ss01" 1;
 }
 
-/* Numerals must never shift width while a market ticks. */
-.tnum {
-  font-variant-numeric: tabular-nums;
-  font-family: var(--font-mono), ui-monospace, monospace;
-}
+/* These live in @layer components so Tailwind utilities still win over them.
+   Outside a layer they are emitted after the utilities and silently override
+   them: `class="label text-yes"` rendered grey, not green. */
+@layer components {
+  /* Numerals must never shift width while a market ticks. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono), ui-monospace, monospace;
+  }
 
-/* The house label: small, wide, quiet. */
-.label {
-  font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: #5c656d;
-}
+  /* The house label: small, wide, quiet. */
+  .label {
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #828c95;
+  }
 
-/* Terminal panel: hairline border, square corners, corner ticks. */
-.panel {
-  position: relative;
-  background: #0e1012;
-  border: 1px solid #22272b;
+  /* Terminal panel: hairline border, square corners, corner ticks. */
+  .panel {
+    position: relative;
+    background: #101316;
+    border: 1px solid #2a3137;
+  }
 }
 
 .panel-tick::before,

@@ -124,8 +124,8 @@ export function TopBar() {
 
 export function Footer() {
   return (
-    <footer className="border-t border-ink-line mt-20">
-      <div className="mx-auto max-w-[1180px] px-5 py-8 flex flex-col sm:flex-row gap-4 justify-between text-[11px] text-bone-faint">
+    <footer className="border-t border-ink-line mt-10">
+      <div className="mx-auto max-w-[1180px] px-5 py-6 flex flex-col sm:flex-row gap-4 justify-between text-[11px] text-bone-faint">
         <p>
           Settlement is performed by the AgentBet Intelligent Contract on{" "}
           {CHAIN_NAME}. This interface only displays contract state.
