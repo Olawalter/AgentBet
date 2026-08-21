@@ -3,9 +3,9 @@
   "network": "studionet",
   "chainId": 61999,
   "rpcUrl": "https://studio.genlayer.com/api",
-  "contractAddress": "0x98DEd2f0341f0aedA6bA0Bbff432382AD10928A0",
-  "deployTxHash": "0x09bec6bb1a2b3b652800403ecd525bec09a4e3d58924488e4b140246722aab54",
+  "contractAddress": "0xb37208B984c7Fc56df6c07913cca6d5062f0451A",
+  "deployTxHash": "0xc377409adaa24bb1f990018e04dd9d09d9d5128f7d53a2b1e297e7e910bd3546",
   "contractFile": "contracts/agentbet.py",
-  "deployedAt": "2026-08-18T22:54:35.878Z",
-  "explorer": "https://explorer-studio.genlayer.com/address/0x98DEd2f0341f0aedA6bA0Bbff432382AD10928A0"
+  "deployedAt": "2026-08-20T23:26:24.829Z",
+  "explorer": "https://explorer-studio.genlayer.com/address/0xb37208B984c7Fc56df6c07913cca6d5062f0451A"
 }

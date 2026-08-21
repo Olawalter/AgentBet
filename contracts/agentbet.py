@@ -67,6 +67,10 @@ CMP_LTE = "<="
 # ─── Limits ───────────────────────────────────────────────────────────────────
 
 MAX_QUESTION_LEN    = 300
+# Price rules only: the resolution deadline may sit at most this far past the
+# observation instant, keeping the instant observable by every operator for
+# the whole legal window (see the note above _price_source_urls).
+MAX_PRICE_RESOLUTION_WINDOW = 86400
 MAX_DESCRIPTION_LEN = 1200
 MAX_CLAIM_SOURCES   = 4
 MAX_EXCERPT_LEN     = 600
@@ -95,23 +99,63 @@ PRICE_TOLERANCE_BPS = 100
 # including the market creator — can edit the bytes the validators will read.
 
 # REACHABILITY IS A PROPERTY OF THE VALIDATORS, NOT OF YOUR LAPTOP.
-# Every endpoint below was probed on-chain via preview_resolution before being
-# trusted. Bitstamp was in this list and had to be removed: it answers fine from
-# a developer machine and is UNREACHABLE from GenLayer validators, so it would
-# have occupied a redundancy slot while never contributing a reading.
+# Every endpoint here must be probed on-chain via preview_resolution before
+# being trusted. Bitstamp was once in this list and had to be removed: it
+# answers fine from a developer machine and is UNREACHABLE from GenLayer
+# validators, so it occupied a redundancy slot while never contributing.
+#
+# THE OBSERVATION IS BOUND TO A PREDETERMINED INSTANT, NOT TO "NOW".
+# A live spot ticker lets whoever calls resolve_market choose the moment the
+# market is judged at — with a volatile price near the threshold, the caller
+# shops for a favorable minute inside the resolution window. So price markets
+# observe the price AT resolution_start (fixed immutably at creation) using
+# HISTORICAL candle endpoints. The concrete URLs, instant included, are baked
+# into the market at creation: every trader can see, before staking, exactly
+# which bytes will decide the market, and no caller input reaches the fetch.
 PRICE_FEEDS = {
+    # subject -> ((source_id, operator pair id), ...)
     "BTC/USD": (
-        ("gemini",     "https://api.gemini.com/v1/pubticker/btcusd"),
-        ("bitfinex",   "https://api.bitfinex.com/v1/pubticker/btcusd"),
-        ("coingecko",  "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"),
-        ("blockchain", "https://blockchain.info/ticker"),
+        ("bitfinex",  "tBTCUSD"),
+        ("gemini",    "btcusd"),
+        ("coingecko", "bitcoin"),
     ),
     "ETH/USD": (
-        ("gemini",    "https://api.gemini.com/v1/pubticker/ethusd"),
-        ("bitfinex",  "https://api.bitfinex.com/v1/pubticker/ethusd"),
-        ("coingecko", "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"),
+        ("bitfinex",  "tETHUSD"),
+        ("gemini",    "ethusd"),
+        ("coingecko", "ethereum"),
     ),
 }
+
+# A reading qualifies only if the operator timestamps it inside
+# [instant, instant + OBSERVATION_WINDOW]. The extractors enforce this
+# themselves, so even a misbehaving server cannot smuggle in a stale or
+# future candle — the timestamp check is in contract code, not trusted
+# to the URL's query parameters.
+OBSERVATION_WINDOW = 300
+
+
+def _price_source_urls(subject: str, instant: int) -> list:
+    """Concrete (source_id, url) pairs for observing `subject` at `instant`.
+    Pure function of immutable market fields — every validator derives the
+    same URLs, and they are stored on the market at creation."""
+    t = int(instant)
+    out = []
+    for sid, pair in PRICE_FEEDS[subject]:
+        if sid == "bitfinex":
+            out.append((sid,
+                f"https://api-pub.bitfinex.com/v2/candles/trade:1m:{pair}/hist"
+                f"?start={t * 1000}&end={(t + OBSERVATION_WINDOW) * 1000}"
+                f"&limit=5&sort=1"))
+        elif sid == "gemini":
+            # Gemini serves recent 1m candles with no time filter; the
+            # extractor selects the candle at the bound instant by timestamp.
+            out.append((sid, f"https://api.gemini.com/v2/candles/{pair}/1m"))
+        elif sid == "coingecko":
+            out.append((sid,
+                f"https://api.coingecko.com/api/v3/coins/{pair}"
+                f"/market_chart/range?vs_currency=usd"
+                f"&from={t}&to={t + OBSERVATION_WINDOW}"))
+    return out
 
 # EVENT_CLAIM markets may cite specific pages, but only on independent
 # publishers/registries. A party-hosted URL is refused at the boundary.
@@ -185,25 +229,45 @@ def _cents_to_text(cents: int) -> str:
     return f"{cents // 100}.{cents % 100:02d}"
 
 
-def _extract_price_cents(source_id: str, raw: str) -> int:
-    """Adapter per feed operator. Each returns the last traded price in cents,
-    or 0 when the body is missing, malformed, or shaped unexpectedly."""
+def _extract_instant_price_cents(source_id: str, raw: str, instant: int) -> int:
+    """The price of the asset AT the bound instant, in cents, or 0 when the
+    body is malformed or carries no reading inside the observation window.
+
+    Each adapter validates the operator's own timestamp against
+    [instant, instant + OBSERVATION_WINDOW]. The window in the URL is merely a
+    request; this check is the enforcement — a server replaying old data or a
+    caller replaying old bytes cannot produce a qualifying reading.
+    """
+    t = int(instant)
+    lo_ms, hi_ms = t * 1000, (t + OBSERVATION_WINDOW) * 1000
     try:
         d = json.loads(raw)
     except Exception:
         return 0
     try:
-        if source_id == "gemini":
-            return _decimal_to_cents(d["last"])
         if source_id == "bitfinex":
-            return _decimal_to_cents(d["last_price"])
-        if source_id == "coingecko":
-            for _, inner in d.items():          # {"bitcoin": {"usd": 64161}}
-                if isinstance(inner, dict) and "usd" in inner:
-                    return _decimal_to_cents(inner["usd"])
+            # [[MTS, OPEN, CLOSE, HIGH, LOW, VOLUME], ...] ascending (sort=1).
+            # First candle inside the window; OPEN = price at that boundary.
+            for row in d:
+                ts = int(row[0])
+                if lo_ms <= ts <= hi_ms:
+                    return _decimal_to_cents(row[1])
             return 0
-        if source_id == "blockchain":
-            return _decimal_to_cents(d["USD"]["last"])   # {"USD": {"last": ...}}
+        if source_id == "gemini":
+            # [[MTS, OPEN, HIGH, LOW, CLOSE, VOLUME], ...] most-recent-first,
+            # covering roughly the last day. Earliest candle in the window.
+            best_ts, best = None, 0
+            for row in d:
+                ts = int(row[0])
+                if lo_ms <= ts <= hi_ms and (best_ts is None or ts < best_ts):
+                    best_ts, best = ts, _decimal_to_cents(row[1])
+            return best
+        if source_id == "coingecko":
+            # {"prices": [[ms, price], ...]} within the requested range.
+            for ts, price in d.get("prices", []):
+                if lo_ms <= int(ts) <= hi_ms:
+                    return _decimal_to_cents(price)
+            return 0
     except Exception:
         return 0
     return 0
@@ -314,6 +378,7 @@ class Resolution:
     market_id: str
     outcome: str
     sufficient: bool
+    observed_at: u256         # the predetermined instant the price was observed at
     observed_summary: str
     reason: str
     resolved_at: u256
@@ -455,6 +520,19 @@ class AgentBet(gl.Contract):
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
+    def _view_now(self) -> int:
+        """Best-effort deterministic 'now' for VIEWS: the transaction datetime
+        the node stamps on the call. Views cannot run the consensus clock
+        (nondet is not available to them), and they do not need its guarantees
+        — every write path re-enforces its window against the consensus clock.
+        This exists so a view never ADVERTISES an action a write would refuse:
+        0 on a missing/unparseable stamp, which reads as 'window not yet
+        elapsed' — the advisory surface fails toward under-promising."""
+        try:
+            return max(0, _epoch_from_iso(str(gl.message_raw["datetime"])))
+        except Exception:
+            return 0
+
     def _market(self, market_id: str) -> Market:
         _require(market_id in self.markets, "[EXPECTED] market not found")
         return self.markets[market_id]
@@ -520,7 +598,19 @@ class AgentBet(gl.Contract):
             _require(int(threshold_cents) > 0, "[EXPECTED] threshold must be positive")
             _require(len(claim_sources) == 0,
                      "[EXPECTED] price markets use the contract's own feeds; no sources may be supplied")
-            for _, url in PRICE_FEEDS[subject]:
+            # Historical granularity degrades with age on some operators
+            # (Gemini keeps ~1 day of 1m candles; CoinGecko's range API drops
+            # to hourly beyond a day). Cap the legal resolution window so the
+            # bound instant stays observable by >= 2 operators for the whole
+            # window — otherwise a late resolve would fail closed for a
+            # data-availability reason rather than an evidentiary one.
+            _require(deadline - start <= MAX_PRICE_RESOLUTION_WINDOW,
+                     "[EXPECTED] price markets must set their resolution deadline within "
+                     f"{MAX_PRICE_RESOLUTION_WINDOW} seconds of the observation instant")
+            # The observation instant is resolution_start — fixed here, now,
+            # before anyone stakes. The URLs embed it; no caller input reaches
+            # the fetch, and no call timing changes what is observed.
+            for _, url in _price_source_urls(subject, start):
                 sources.append(url)
         else:
             _require(0 < len(subject.strip()) <= MAX_QUESTION_LEN,
@@ -694,6 +784,10 @@ class AgentBet(gl.Contract):
         threshold = int(m.threshold_cents)
         condition = m.condition_text
         question = m.question
+        # The predetermined observation instant. Derived from immutable market
+        # state — the moment staking closed — never from the caller or "now",
+        # so calling resolve early or late in the window observes the same datum.
+        instant = int(m.resolution_start)
 
         feed_ids: list[str] = []
         if rule_kind == RULE_SPOT_THRESHOLD and subject in PRICE_FEEDS:
@@ -717,13 +811,17 @@ class AgentBet(gl.Contract):
 
                 if rule_kind == RULE_SPOT_THRESHOLD:
                     sid = feed_ids[idx] if idx < len(feed_ids) else ""
-                    cents = _extract_price_cents(sid, body)
+                    cents = _extract_instant_price_cents(sid, body, instant)
                     if cents > 0:
                         row["observed"] = _cents_to_text(cents)
                         readings.append(cents)
-                    else:
-                        # Reachable but unparseable is not a reading.
-                        row["readable"] = False
+                    # else: fetched, but no qualifying reading at the bound
+                    # instant. The row stays readable=True (the fetch is a
+                    # fact) with observed empty — corroboration counts
+                    # READINGS, never fetches, so an empty observation can
+                    # never help settle a market. Keeping the two facts
+                    # separate makes the on-chain record diagnosable:
+                    # unreachable host vs reachable host with no datum.
                 rows.append(row)
 
             outcome = OUTCOME_UNRESOLVED
@@ -753,7 +851,8 @@ class AgentBet(gl.Contract):
                     outcome = OUTCOME_YES if hit else OUTCOME_NO
                     reason = (
                         f"{len(readings)} independent feeds corroborated {subject} at "
-                        f"{summary}; condition {subject} {comparator} "
+                        f"{summary} observed at the bound instant {instant}; "
+                        f"condition {subject} {comparator} "
                         f"{_cents_to_text(threshold)} is {'met' if hit else 'not met'}"
                     )
             else:
@@ -838,6 +937,7 @@ class AgentBet(gl.Contract):
                 {
                     "outcome": outcome,
                     "sufficient": sufficient,
+                    "observed_at": instant if rule_kind == RULE_SPOT_THRESHOLD else 0,
                     "observed_summary": summary[:120],
                     "reason": (reason or "")[:MAX_REASON_LEN],
                     "rows": rows,
@@ -848,14 +948,15 @@ class AgentBet(gl.Contract):
         principle = (
             "Both outputs are JSON settlements of the same prediction market. They "
             "are equivalent ONLY if ALL of these match exactly: the 'outcome' "
-            "string, the 'sufficient' boolean, the number of entries in 'rows', "
-            "and for each entry in 'rows' at the same index both the 'url' and the "
-            "'readable' flag. In addition, where an entry carries a numeric "
-            "'observed' value, the two values must be within one percent of each "
-            "other. The 'excerpt', 'reason' and 'observed_summary' free text may "
-            "differ — live pages and wording are expected to vary. Any mismatch in "
-            "outcome, sufficient, row count, a url, a readable flag, or a numeric "
-            "observed value beyond one percent means NOT equivalent."
+            "string, the 'sufficient' boolean, the 'observed_at' integer, the "
+            "number of entries in 'rows', and for each entry in 'rows' at the same "
+            "index both the 'url' and the 'readable' flag. In addition, where an "
+            "entry carries a numeric 'observed' value, the two values must be "
+            "within one percent of each other. The 'excerpt', 'reason' and "
+            "'observed_summary' free text may differ — live pages and wording are "
+            "expected to vary. Any mismatch in outcome, sufficient, observed_at, "
+            "row count, a url, a readable flag, or a numeric observed value beyond "
+            "one percent means NOT equivalent."
         )
         return str(gl.eq_principle.prompt_comparative(observe, principle))
 
@@ -877,6 +978,16 @@ class AgentBet(gl.Contract):
         now = self._utc_now()
         _require(now >= int(m.resolution_start),
                  "[EXPECTED] the resolution window has not opened yet")
+        # The upper bound. Resolution is legal only inside
+        # [resolution_start, resolution_deadline]; past the deadline the sole
+        # exit is the recovery path, which begins strictly later (deadline +
+        # grace) and only ever refunds. The two paths can therefore never both
+        # be live: nobody can watch the price drift after the deadline and
+        # choose between "resolve now" and "wait for the refund".
+        _require(now <= int(m.resolution_deadline),
+                 "[EXPECTED] the resolution deadline has passed — this market can "
+                 "only be recovered for refunds now (mark_unresolved after the "
+                 "recovery deadline)")
 
         sources = list(self.market_sources[market_id]) if market_id in self.market_sources else []
         _require(len(sources) > 0, "[EXPECTED] market has no bound sources")
@@ -916,6 +1027,7 @@ class AgentBet(gl.Contract):
             market_id=market_id,
             outcome=outcome,
             sufficient=sufficient,
+            observed_at=u256(max(0, int(data.get("observed_at", 0)))),
             observed_summary=str(data.get("observed_summary", ""))[:120],
             reason=str(data.get("reason", ""))[:MAX_REASON_LEN],
             resolved_at=u256(now),
@@ -1182,6 +1294,19 @@ class AgentBet(gl.Contract):
             if pos.side != m.final_outcome:
                 out["reason"] = f"market resolved {m.final_outcome}; position was {pos.side}"
                 return out
+            # Aligned with claim_winnings: while the settlement delay is still
+            # arming, this view must not advertise a claim the write path would
+            # refuse. The amount is still shown so the UI can render "yours,
+            # unlocking at T" instead of an enabled button that reverts.
+            unlock = int(m.finalized_at) + SETTLEMENT_DELAY
+            if self._view_now() < unlock:
+                out["kind"] = "winnings_pending"
+                out["amount"] = str(self._entitlement(m, pos))
+                out["reason"] = (
+                    "winning position — the settlement window is still open; "
+                    f"claims unlock at {unlock}"
+                )
+                return out
             out["claimable"] = True
             out["kind"] = "winnings"
             out["amount"] = str(self._entitlement(m, pos))
@@ -1214,6 +1339,7 @@ class AgentBet(gl.Contract):
             "sufficient": r.sufficient,
             "observed_summary": r.observed_summary,
             "reason": r.reason,
+            "observed_at": str(int(r.observed_at)),
             "resolved_at": str(int(r.resolved_at)),
             "row_count": int(r.row_count),
             "rows": rows,

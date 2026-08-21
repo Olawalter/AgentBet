@@ -33,19 +33,18 @@ class TestPriceCorroboration:
         the settlement: the median reading is what the condition is tested
         against."""
         mid = _staked_market(book, threshold_cents=6420000)   # >= $64,200
-        world.set_prices(blockchain=6411032, gemini=6416485,
-                         bitfinex=6424200, coingecko=6416100)
+        world.set_prices(gemini=6416485, bitfinex=6424200, coingecko=6416100)
         book.enter_resolution(mid)
         book.resolve(mid)
-        # median of the four readings is 64161.00, below the $64,200 threshold
-        assert book.resolution(mid)["observed_summary"] == "64161.00"
+        # median of the three readings is 64164.85, below the $64,200 threshold
+        assert book.resolution(mid)["observed_summary"] == "64164.85"
         assert book.market(mid)["final_outcome"] == "NO"
 
     def test_single_usable_feed_cannot_settle_a_market(self, book, world):
         """Corroboration is mandatory. One reachable source is one point of
         failure and one point of manipulation."""
         mid = _staked_market(book)
-        world.kill_price_sources("gemini", "bitfinex", "coingecko")
+        world.kill_price_sources("gemini", "coingecko")   # only bitfinex alive
         book.enter_resolution(mid)
         book.resolve(mid)
         m = book.market(mid)
@@ -53,11 +52,12 @@ class TestPriceCorroboration:
         assert m["final_outcome"] == "UNRESOLVED"
         assert m["status"] == "refundable"
         assert r["sufficient"] is False
+        assert "only 1 usable" in r["reason"]
         assert "corroborate" in r["reason"]
 
     def test_no_reachable_feed_refunds(self, book, world):
         mid = _staked_market(book)
-        world.kill_price_sources("blockchain", "gemini", "bitfinex", "coingecko")
+        world.kill_price_sources("gemini", "bitfinex", "coingecko")
         book.enter_resolution(mid)
         book.resolve(mid)
         assert book.market(mid)["status"] == "refundable"
@@ -69,8 +69,7 @@ class TestPriceCorroboration:
         """Two independent venues minutes apart on price means one is broken or
         lying. The contract refuses rather than picking the convenient one."""
         mid = _staked_market(book, threshold_cents=6000000)
-        world.set_prices(blockchain=6400000, gemini=6400000,
-                         bitfinex=9900000, coingecko=9900000)
+        world.set_prices(gemini=6400000, bitfinex=9900000, coingecko=9900000)
         book.enter_resolution(mid)
         book.resolve(mid)
         m = book.market(mid)
@@ -79,20 +78,24 @@ class TestPriceCorroboration:
         assert "disagree" in book.resolution(mid)["reason"]
 
     def test_unparseable_body_is_not_a_reading(self, book, world):
-        """A reachable endpoint serving an error page is not evidence. It must
-        not count toward corroboration."""
+        """A reachable endpoint serving an error page is not evidence. The
+        record keeps the two facts apart: the fetch happened (readable), but
+        no qualifying observation exists — and corroboration counts
+        observations, so the market refunds."""
         mid = _staked_market(book)
-        world.garble_price_sources("gemini", "bitfinex", "coingecko")
+        world.garble_price_sources("gemini", "coingecko")   # bitfinex still clean
         book.enter_resolution(mid)
         book.resolve(mid)
         r = book.resolution(mid)
         assert book.market(mid)["status"] == "refundable"
-        readable = [row for row in r["rows"] if row["readable"]]
-        assert len(readable) == 1
+        observed = [row for row in r["rows"] if row["observed"]]
+        assert len(observed) == 1
+        # The garbled hosts were fetched — the record says so honestly.
+        assert all(row["readable"] for row in r["rows"])
 
     def test_two_agreeing_feeds_are_enough(self, book, world):
         mid = _staked_market(book, threshold_cents=6000000)
-        world.kill_price_sources("bitfinex", "coingecko")
+        world.kill_price_sources("coingecko")   # gemini + bitfinex corroborate
         book.enter_resolution(mid)
         book.resolve(mid)
         assert book.market(mid)["final_outcome"] == "YES"
@@ -220,7 +223,7 @@ class TestRecordIntegrity:
         book.enter_resolution(mid)
         book.resolve(mid)
         rows = book.resolution(mid)["rows"]
-        assert len(rows) == 4
+        assert len(rows) == 3
         assert sum(1 for r in rows if not r["readable"]) == 1
 
 
@@ -267,7 +270,7 @@ class TestResolutionAccessAndTiming:
         raw = book.c.preview_resolution(mid)
         finding = json.loads(raw)
         assert finding["outcome"] in ("YES", "NO", "UNRESOLVED")
-        assert len(finding["rows"]) == 4
+        assert len(finding["rows"]) == 3
         after = book.market(mid)
         assert after["status"] == before["status"] == "open"
         assert after["final_outcome"] == ""

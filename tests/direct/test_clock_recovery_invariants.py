@@ -171,7 +171,7 @@ class TestRecovery:
         not establish an answer."""
         mid = book.create_price_market()
         book.stake(mid, book.alice, "YES", GEN)
-        world.kill_price_sources("blockchain", "gemini", "bitfinex", "coingecko")
+        world.kill_price_sources("gemini", "bitfinex", "coingecko")
         book.enter_resolution(mid)
         book.resolve(mid)
         assert book.market(mid)["status"] == "refundable"

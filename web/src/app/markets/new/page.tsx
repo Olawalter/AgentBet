@@ -48,7 +48,7 @@ export default function NewMarketPage() {
   const effectiveQuestion = question.trim() || autoQuestion;
   const conditionText =
     rule === "SPOT_THRESHOLD"
-      ? `${subject} ${comparator} ${thresholdCents / 100} at resolution time, from the contract's independent price feeds`
+      ? `${subject} ${comparator} ${thresholdCents / 100} at the observation instant (the moment staking closes), from the contract's independent historical feeds`
       : `Independent cited sources establish that: ${claimSubject.trim()}`;
 
   const valid =

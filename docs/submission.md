@@ -1,6 +1,6 @@
 # AgentBet — Submission Notes
 
-Contract: `0x98DEd2f0341f0aedA6bA0Bbff432382AD10928A0` (GenLayer StudioNet, chain 61999)
+Contract: `0xb37208B984c7Fc56df6c07913cca6d5062f0451A` (GenLayer StudioNet, chain 61999)
 Source: [`contracts/agentbet.py`](../contracts/agentbet.py)
 
 ---
@@ -170,7 +170,7 @@ For the UI: `cd web && npm install && npm run dev`, set
 
 ### 13. What are the limitations?
 
-1. Price rules are **spot-at-resolution**, not "ever reached during the window";
+1. Price rules observe **one predetermined instant** (`resolution_start`), not "ever reached during the window";
    honest OHLC support needs more independent operators serving it.
 2. The settlement delay is an armed window, not a finality read (see 10).
 3. Event markets inherit a model's judgment — constrained by structural

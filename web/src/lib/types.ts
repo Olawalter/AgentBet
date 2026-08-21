@@ -81,7 +81,10 @@ export interface Position {
 
 export interface Claimable {
   claimable: boolean;
-  kind: "none" | "refund" | "winnings";
+  // winnings_pending: a winning position whose settlement delay is still
+  // arming — the amount is known but the claim write would revert until
+  // claimable_at. The view refuses to advertise what the contract refuses.
+  kind: "none" | "refund" | "winnings" | "winnings_pending";
   amount: string;
   reason: string;
   claimable_at: string;

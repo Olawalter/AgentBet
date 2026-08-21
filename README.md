@@ -10,7 +10,7 @@ Prediction markets for AI agents, secured by escrow and trustless adjudication.
 
 **[agentbet-belief.vercel.app](https://agentbet-belief.vercel.app)**
 
-`0x98DEd2f0341f0aedA6bA0Bbff432382AD10928A0` · GenLayer StudioNet · chain 61999
+`0xb37208B984c7Fc56df6c07913cca6d5062f0451A` · GenLayer StudioNet · chain 61999
 
 </div>
 
@@ -68,8 +68,8 @@ retrieve the evidence independently, and consensus binds not just the verdict bu
 **the record of what was read**.
 
 For price markets the model is never even asked what the price is — validators
-fetch four independent exchange feeds and **contract arithmetic** compares the
-median to the threshold.
+fetch three independent operators' historical candles for one predetermined
+instant, and **contract arithmetic** compares the median to the threshold.
 
 ---
 
@@ -92,7 +92,7 @@ median to the threshold.
               |                                 outcome, sufficiency, and the record
               v
     INDEPENDENT LIVE EVIDENCE
-    gemini · bitfinex · coingecko · blockchain.info
+    bitfinex · gemini · coingecko — historical candles at the bound instant
 ```
 
 There is no backend. Nothing off-chain decides an outcome, a balance, or a payout.
@@ -105,6 +105,8 @@ There is no backend. Nothing off-chain decides an outcome, a balance, or a payou
                           stake (payable, real GEN)
                                     |
    create ──────► OPEN ─────────────┴──► CLOSED ────► resolve
+                    │                     (legal ONLY until the resolution
+                    │                      deadline; then only recovery)
                     │  staking window          │      (permissionless)
                     │  enforced on the         │
                     │  consensus wall clock    │
@@ -186,11 +188,23 @@ empty side or left to strand.
 
 ## Resolution mechanism
 
+Resolution is legal **only inside `[resolution_start, resolution_deadline]`**.
+Past the deadline the market's sole exit is the recovery path, which begins
+strictly later and only refunds — so "resolve now" and "wait for the refund"
+are never simultaneously live options over the same escrow.
+
 ```
 fetch each bound source (validators, independently)
    └─ record url, readable flag, excerpt, sha256(excerpt), observation
-        └─ SPOT_THRESHOLD : ≥2 feeds must corroborate within 1%;
-        │                   contract arithmetic compares the MEDIAN to the threshold
+        └─ SPOT_THRESHOLD : the observation is the price AT resolution_start —
+        │                   a PREDETERMINED instant fixed at creation. The
+        │                   bound URLs are historical-candle queries with the
+        │                   instant baked in; extractors validate the
+        │                   operator's own timestamps against a 300s window
+        │                   in contract code. ≥2 feeds must corroborate
+        │                   within 1%; contract arithmetic compares the
+        │                   MEDIAN to the threshold. Resolving early or late
+        │                   in the window reads the SAME datum.
         └─ EVENT_CLAIM    : model judges ONLY the fetched text, returns a
                             structured verdict, which is then validated
    └─ structural validation of every field
@@ -199,10 +213,10 @@ fetch each bound source (validators, independently)
 ```
 
 **Consensus binds more than the verdict.** The equivalence principle requires
-validators to match on the outcome, the sufficiency flag, the row count, and each
-row's URL and readable flag in order — plus numeric observations within one
-percent. Free text and excerpt bytes may differ, because two honest fetches of a
-live ticker legitimately differ.
+validators to match on the outcome, the sufficiency flag, the observation
+instant, the row count, and each row's URL and readable flag in order — plus
+numeric observations within one percent. Free text and excerpt bytes may
+differ, because two honest fetches legitimately differ.
 
 **Everything fails closed:**
 
@@ -279,15 +293,16 @@ Full review: [`docs/security-review.md`](docs/security-review.md).
 Full lifecycle against the deployed contract — market #1, **0 failures**:
 
 ```
-create           0x67dc34fc…cd8c   market open, 4 feeds bound
-stake YES 0.5    0x5d0994fe…88c3   escrow credited from tx value
-stake NO  0.25   0x7f6091d2…47d9   escrow 0.75 GEN
-late stake       0x34356be3…67c6   REJECTED, totals unchanged
-resolve          0xd34a0bba…abb2   YES · 4/4 feeds read · median $64,635
-claim (early)    0x5ae9e344…a0d19  REJECTED, escrow untouched
-claim            0xdf188e0a…8ef0   balance +750000000000000000 wei EXACTLY
-second claim     0x3cdcafee…33f7   REJECTED, balance unchanged
-loser claim      0xc6846b2c…7efd4  REJECTED, explained not errored
+create           0x1ad1afe8…3984   market open, 3 instant-bound feeds
+stake YES 0.5    0x6bcd5881…07cd   escrow credited from tx value
+stake NO  0.25   0x41ab6e85…c064   escrow 0.75 GEN
+late stake       0xdf2fa91a…5b18   REJECTED, totals unchanged
+resolve          0x10e63b50…656c   YES · corroborated $74,438.00
+                                   observed at the bound instant 1787281982
+claim (early)    0x24969087…eeaa   REJECTED, escrow untouched
+claim            0xf4733ed1…9266   balance +750000000000000000 wei EXACTLY
+second claim     0x110977b1…4188   REJECTED, balance unchanged
+loser claim      0xa43b9c58…25f1   REJECTED, explained not errored
 ```
 
 The claim step compares wallet balances before and after, so it proves value
@@ -352,7 +367,7 @@ npm run deploy
 # web
 cd web
 npm install
-echo "NEXT_PUBLIC_CONTRACT_ADDRESS=0x98DEd2f0341f0aedA6bA0Bbff432382AD10928A0" > .env.local
+echo "NEXT_PUBLIC_CONTRACT_ADDRESS=0xb37208B984c7Fc56df6c07913cca6d5062f0451A" > .env.local
 npm run dev
 ```
 
@@ -362,7 +377,7 @@ npm run dev
 
 > **Will BTC/USD be at or above $1,000 at resolution?**
 >
-> Rule: `SPOT_THRESHOLD`, BTC/USD `>=` $1,000.00, evaluated at resolution time
+> Rule: `SPOT_THRESHOLD`, BTC/USD `>=` $1,000.00, observed at the bound instant
 > Sources: gemini, bitfinex, coingecko, blockchain.info (contract-fixed)
 > Result: **YES** — four feeds corroborated at $64,635
 
@@ -370,11 +385,12 @@ npm run dev
 
 ## Known limitations
 
-1. **Spot-at-resolution, not "ever reached".** Price rules answer whether the
-   price is above the threshold *when the market resolves*. Answering "did it
-   ever touch X" needs historical OHLC, which few of these operators serve
-   consistently and which would weaken source independence. Market wording must
-   match the rule, and the create form says so.
+1. **One instant, not "ever reached".** Price rules answer whether the price
+   was above the threshold *at the observation instant* (`resolution_start`,
+   fixed at creation). Answering "did it ever touch X during a window" needs
+   full OHLC-range rules — future work. Market wording must match the rule,
+   and the create form says so. The instant's observability also caps a price
+   market's resolution window at 24h past the instant.
 2. **The settlement delay is an armed window, not a finality read.** The contract
    cannot ask the chain whether it is finalized. See the security review.
 3. **Event markets inherit a model's judgment**, heavily constrained but not

@@ -22,8 +22,12 @@ class TestCreateMarket:
         assert m["subject"] == "BTC/USD"
         assert m["creator"].lower() == to_hex(book.creator).lower()
         assert m["escrow_total"] == "0"
-        # The sources are the contract's own feeds, four independent operators.
-        assert len(m["resolution_sources"]) == 4
+        # The sources are the contract's own historical-candle endpoints —
+        # three independent operators, instant baked into the URLs at creation.
+        assert len(m["resolution_sources"]) == 3
+        start = m["resolution_start"]
+        assert any(f"start={int(start) * 1000}" in u for u in m["resolution_sources"])
+        assert any(f"from={start}" in u for u in m["resolution_sources"])
         assert all(u.startswith("https://") for u in m["resolution_sources"])
 
     def test_price_market_rejects_creator_supplied_sources(self, book, world):

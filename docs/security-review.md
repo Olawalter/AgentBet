@@ -1,7 +1,7 @@
 # AgentBet — Escrow Security Review
 
 Scope: `contracts/agentbet.py` as deployed at
-`0x98DEd2f0341f0aedA6bA0Bbff432382AD10928A0` (GenLayer StudioNet).
+`0xb37208B984c7Fc56df6c07913cca6d5062f0451A` (GenLayer StudioNet).
 
 The review enumerates every path by which value enters or leaves the contract
 and checks each against the same fixed list of properties. It also records the
@@ -129,7 +129,11 @@ step, not only at the end — in `test_three_winners_cannot_overdraw_the_pool`.
 | Creator edits terms after stakes | No setter exists for any settlement-affecting field. Asserted by `test_no_withdrawal_or_term_setters_exist`. |
 | Creator points the market at evidence they control | The creator chooses a *subject*, not a URL. Price endpoints are contract constants; event markets are restricted to an allowlist of independent publishers. |
 | Late staking once the answer is knowable | `stake` enforces the wall clock itself, not merely a status flag. |
+| Caller shops for a favorable price moment | The observation is bound to `resolution_start`, fixed at creation: validators read HISTORICAL candles for that instant, whose URLs are baked into the market before anyone stakes. Early or late, resolve reads the same datum. |
+| Resolution raced against the refund path | `resolve_market` is legal only in `[resolution_start, resolution_deadline]`; recovery opens strictly later (`deadline + grace`) and only refunds. The two settlements of the same escrow are never simultaneously live, and in the grace gap neither is. |
+| Operator serves stale/out-of-window data | Every extractor validates the operator's own timestamps against `[instant, instant + 300s]` in contract code — the URL's query window is a request, the in-contract check is the enforcement. |
 | A single lying or broken feed decides a market | At least two readings must corroborate within 1%; the median decides. |
+| View advertises a claim the write refuses | `get_claimable` mirrors the settlement delay (`winnings_pending` until `finalized_at + 300s`), so the UI cannot render an enabled claim that reverts. |
 | Model returns malformed or hostile output | Structurally validated; anything unparseable resolves UNRESOLVED. |
 | Model says "insufficient" but leans an answer | Gated in both directions — an insufficient finding can never settle YES *or* NO. |
 | Fetched page contains prompt injection | Fence delimiters are stripped from retrieved bytes; the prompt names the fetched block as untrusted material. |
@@ -155,7 +159,7 @@ step, not only at the end — in `test_three_winners_cannot_overdraw_the_pool`.
    state-before-transfer ordering and that a second claim emits nothing; they do
    not model a reentrant callback, because the mechanism does not provide one.
 
-3. **Price rules are spot-at-resolution.** They answer "is the price at or above
+3. **Price rules observe one predetermined instant.** They answer "is the price at or above
    X when the market resolves", not "did it ever touch X during the window".
    Market wording must match, and the UI says so.
 

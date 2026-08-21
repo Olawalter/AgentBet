@@ -347,14 +347,22 @@ export default function MarketPage({ params }: { params: Promise<{ id: string }>
                       </>
                     ) : (
                       <>
-                        <Label>Not claimable</Label>
+                        <Label>
+                          {claim.kind === "winnings_pending" ? "Won — unlocking" : "Not claimable"}
+                        </Label>
+                        {claim.kind === "winnings_pending" && (
+                          <div className="tnum text-[22px] text-amber mt-1">
+                            {toGen(claim.amount)} GEN
+                          </div>
+                        )}
                         <p className="text-[12.5px] text-bone-dim mt-1.5 leading-relaxed">
                           {claim.reason}
                         </p>
                         {claim.claimable_at && market.status === "finalized" && (
                           <p className="text-[11px] text-bone-faint mt-2">
                             Settlement unlocks {relativeTo(claim.claimable_at)} — the
-                            resolution&apos;s appeal window.
+                            resolution&apos;s appeal window. The claim button appears
+                            when the contract will accept it.
                           </p>
                         )}
                       </>

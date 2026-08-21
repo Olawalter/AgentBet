@@ -55,7 +55,7 @@ class TestOutcomes:
         mid = _settled_yes(book, yes=[(book.alice, GEN)], no=[(book.bob, GEN)])
         r = book.resolution(mid)
         assert r["exists"] is True
-        assert r["row_count"] == 4
+        assert r["row_count"] == 3
         for row in r["rows"]:
             assert row["url"].startswith("https://")
             assert row["readable"] is True

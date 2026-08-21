@@ -7,6 +7,7 @@
   "scripts": {
     "deploy": "tsx scripts/deploy.ts",
     "probe": "tsx scripts/probe_sources.ts",
+    "probe:instant": "tsx scripts/probe_instant.ts",
     "lifecycle": "tsx scripts/live_lifecycle.ts",
     "state": "tsx scripts/read_state.ts",
     "typecheck": "tsc -p tsconfig.json"

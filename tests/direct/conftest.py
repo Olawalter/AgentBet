@@ -64,33 +64,39 @@ def cdn_trace(epoch: int, host: str) -> str:
 # Wall-clock hosts, keyed the way the contract keys them (by path, not host).
 CDN_HOSTS = ("cloudflare.com", "www.digitalocean.com", "medium.com")
 
-# Price feeds: source id -> (url fragment used for mock matching, body builder).
-PRICE_SOURCES = {
-    # blockchain.info serves JSON numbers, not strings — deliberately mirrored
-    # here so the contract's decimal parser is exercised on both shapes.
-    "blockchain": (r"blockchain\.info/ticker",
-                   lambda c: json.dumps({
-                       "EUR": {"last": 1.0, "symbol": "EUR"},
-                       "USD": {"last": float(f"{c // 100}.{c % 100:02d}"),
-                               "symbol": "USD"},
-                   })),
-    "gemini":    (r"api\.gemini\.com/v1/pubticker/(btc|eth)usd",
-                  lambda c: json.dumps({"last": f"{c // 100}.{c % 100:02d}0000",
-                                        "bid": "1", "ask": "2"})),
-    "bitfinex":  (r"api\.bitfinex\.com/v1/pubticker/(btc|eth)usd",
-                  lambda c: json.dumps({"last_price": f"{c // 100}.{c % 100:02d}",
-                                        "mid": "1"})),
-    "coingecko": (r"api\.coingecko\.com/api/v3/simple/price",
-                  lambda c: json.dumps({"bitcoin": {"usd": c // 100}})),
+# Price sources now serve HISTORICAL candles bound to each market's
+# observation instant (resolution_start), mirroring the real operators'
+# shapes. The bodies deliberately include decoy rows OUTSIDE the observation
+# window, so a contract that stopped validating timestamps would read the
+# wrong price and fail these suites.
+PRICE_SOURCE_IDS = ("bitfinex", "gemini", "coingecko")
+
+# Broad per-operator host patterns, used for garbage bodies (which do not
+# depend on the instant).
+PRICE_HOST_PATTERNS = {
+    "bitfinex":  r"api-pub\.bitfinex\.com/v2/candles/",
+    "gemini":    r"api\.gemini\.com/v2/candles/",
+    "coingecko": r"api\.coingecko\.com/api/v3/coins/.*/market_chart/range",
 }
 
-# Default spot: BTC around $64,000, with the small per-venue spread real
-# exchanges show. Well inside the contract's 1% corroboration band.
+DECOY_CENTS = 999_999_99   # a price that would flip any test's outcome
+
+
+def minute_boundary(t: int) -> int:
+    """First minute boundary at or after t — where the 1m candle sits."""
+    return ((int(t) + 59) // 60) * 60
+
+
+def to_price(c: int) -> float:
+    return float(f"{c // 100}.{c % 100:02d}")
+
+
+# Default observation: BTC around $64,000, with the small per-venue spread
+# real exchanges show. Well inside the contract's 1% corroboration band.
 DEFAULT_PRICES_CENTS = {
-    "blockchain": 6411032,
-    "gemini":     6416485,
-    "bitfinex":   6424200,
-    "coingecko":  6416100,
+    "bitfinex":  6424200,
+    "gemini":    6416485,
+    "coingecko": 6416100,
 }
 
 CLAIM_PROMPT_PATTERN = r"You are settling a prediction market"
@@ -113,6 +119,7 @@ class World:
         self.beacon_split = 0       # extra seconds applied to the 2nd witness
         self.chain_ahead = 0        # push the chain floor past 'now'
         self.prices = dict(DEFAULT_PRICES_CENTS)
+        self.instants = set()       # observation instants of created price markets
         self.dead_sources = set()   # price sources that fail to load
         self.garbage_sources = set()  # price sources returning unparseable text
         self.claim_pages = {}       # url fragment -> body
@@ -127,6 +134,26 @@ class World:
         self._register_clock()
         self._register_prices()
         self._register_claims()
+        # Keep the transaction datetime (gl.message_raw) in step with the
+        # mocked web clock, so views that read the node's stamp and writes
+        # that run the consensus clock see the same "now".
+        #
+        # vm.warp alone is NOT enough: the plugin injects its _datetime into
+        # gl.message_raw once, at contract load, and _refresh_gl_message never
+        # rewrites the datetime afterwards — so a warp after deploy is
+        # invisible to the contract. Write the loaded module's dict directly,
+        # which is exactly what the real node does per call.
+        try:
+            self.vm.warp(epoch_to_iso(self.now))
+        except Exception:
+            pass
+        import sys as _sys
+        gl_mod = _sys.modules.get("genlayer.gl")
+        if gl_mod is not None:
+            try:
+                gl_mod.message_raw["datetime"] = epoch_to_iso(self.now)
+            except Exception:
+                pass
 
     def _register_clock(self):
         for host in CDN_HOSTS:
@@ -155,15 +182,59 @@ class World:
                 )
 
     def _register_prices(self):
-        for sid, (pattern, build) in PRICE_SOURCES.items():
-            if sid in self.dead_sources:
-                continue
-            if sid in self.garbage_sources:
-                self.vm.mock_web(pattern, {"status": 200, "body": "<html>rate limited</html>"})
-                continue
-            if sid not in self.prices:
-                continue
-            self.vm.mock_web(pattern, {"status": 200, "body": build(self.prices[sid])})
+        # Garbage first: a broad host pattern that shadows the candle bodies.
+        for sid in self.garbage_sources:
+            if sid not in self.dead_sources:
+                self.vm.mock_web(PRICE_HOST_PATTERNS[sid],
+                                 {"status": 200, "body": "<html>rate limited</html>"})
+
+        live = [s for s in PRICE_SOURCE_IDS
+                if s not in self.dead_sources and s not in self.garbage_sources
+                and s in self.prices]
+
+        # Gemini serves one instant-less URL for every market, so its single
+        # body carries the candle for EVERY registered instant — plus a decoy
+        # outside every observation window.
+        if "gemini" in live:
+            rows = [[(minute_boundary(t) + 900) * 1000, to_price(DECOY_CENTS),
+                     1.0, 1.0, 1.0, 0.1] for t in self.instants]
+            for t in sorted(self.instants, reverse=True):
+                b = minute_boundary(t) * 1000
+                # [MTS, OPEN, HIGH, LOW, CLOSE, VOLUME], most-recent-first
+                rows.append([b, to_price(self.prices["gemini"]), 1.0, 1.0, 1.0, 0.5])
+            self.vm.mock_web(r"api\.gemini\.com/v2/candles/(btc|eth)usd/1m",
+                             {"status": 200, "body": json.dumps(rows)})
+
+        # Bitfinex and CoinGecko URLs embed the instant, so each registered
+        # instant gets its own pattern and body.
+        for t in self.instants:
+            b_ms = minute_boundary(t) * 1000
+            if "bitfinex" in live:
+                # [[MTS, OPEN, CLOSE, HIGH, LOW, VOLUME], ...]. The FIRST row
+                # is a decoy BEFORE the window — a compliant server never sends
+                # it (sort=1&start=t), but the contract must not trust server
+                # compliance: an extractor that stops validating timestamps
+                # reads the decoy and fails these suites.
+                body = json.dumps([
+                    [(t - 900) * 1000, to_price(DECOY_CENTS), 1.0, 1.0, 1.0, 0.2],
+                    [b_ms, to_price(self.prices["bitfinex"]), 1.0, 1.0, 1.0, 0.2],
+                    [(t + 900) * 1000, to_price(DECOY_CENTS), 1.0, 1.0, 1.0, 0.2],
+                ])
+                self.vm.mock_web(
+                    rf"api-pub\.bitfinex\.com/v2/candles/trade:1m:t(BTC|ETH)USD/hist\?start={t * 1000}&",
+                    {"status": 200, "body": body})
+            if "coingecko" in live:
+                # 5-minute granularity: the qualifying point lands mid-window,
+                # exactly as the real range API answers — behind a pre-window
+                # decoy for the same reason as above.
+                body = json.dumps({"prices": [
+                    [(t - 900) * 1000, to_price(DECOY_CENTS)],
+                    [(t + 141) * 1000, to_price(self.prices["coingecko"])],
+                    [(t + 900) * 1000, to_price(DECOY_CENTS)],
+                ]})
+                self.vm.mock_web(
+                    rf"api\.coingecko\.com/api/v3/coins/(bitcoin|ethereum)/market_chart/range\?vs_currency=usd&from={t}&",
+                    {"status": 200, "body": body})
 
     def _register_claims(self):
         for frag, body in self.claim_pages.items():
@@ -198,6 +269,12 @@ class World:
         beacon ceiling exists to catch (min() and the divergence guard both
         pass it, because the hosts share one mechanism)."""
         self.cdn_skew = {h: seconds for h in CDN_HOSTS}
+        self.apply()
+
+    def register_instant(self, t):
+        """A price market bound its observation to instant t — serve candles
+        for it. Called automatically by Book.create_price_market."""
+        self.instants.add(int(t))
         self.apply()
 
     def set_prices(self, **by_source):
@@ -273,14 +350,16 @@ class Book:
     def create_price_market(self, *, sender=None, subject="BTC/USD",
                             comparator=">=", threshold_cents=6000000,
                             opens_in=600, window=3600, question=None):
-        self.vm.sender = sender or self.creator
         start = self.w.now + opens_in
+        # The observation instant is fixed at creation; serve candles for it.
+        self.w.register_instant(start)
+        self.vm.sender = sender or self.creator
         return self.c.create_market(
             question or f"Will {subject} be at or above "
                         f"${threshold_cents // 100:,} at resolution?",
             "Settled from independent exchange feeds fetched under consensus.",
             "SPOT_THRESHOLD", subject, comparator, threshold_cents,
-            f"{subject} {comparator} {threshold_cents // 100} at resolution time",
+            f"{subject} {comparator} {threshold_cents // 100} at the observation instant",
             start, start + window, [],
         )
 

@@ -25,7 +25,7 @@ import pytest
 CONTRACT_SOURCE = pathlib.Path("contracts/agentbet.py")
 
 DEPLOYED = os.environ.get(
-    "AGENTBET_ADDRESS", "0x98DEd2f0341f0aedA6bA0Bbff432382AD10928A0")
+    "AGENTBET_ADDRESS", "0xb37208B984c7Fc56df6c07913cca6d5062f0451A")
 
 VALID_STATUSES = {"open", "closed", "finalized", "refundable", "settled", "cancelled"}
 VALID_OUTCOMES = {"", "YES", "NO", "UNRESOLVED"}

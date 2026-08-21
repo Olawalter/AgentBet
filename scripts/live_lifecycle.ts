@@ -68,7 +68,7 @@ async function main() {
   const mid = String(before);
   let m: any = await read("get_market", [mid]);
   check("market is open", m.status === "open");
-  check("four independent feeds bound", m.resolution_sources.length === 4,
+  check("three instant-bound feeds bound", m.resolution_sources.length === 3,
         m.resolution_sources.length + " sources");
   check("escrow starts empty", m.escrow_total === "0");
 
@@ -118,7 +118,7 @@ async function main() {
   check("market finalized", m.status === "finalized", m.status);
   check("outcome is YES (BTC is above $1,000)", m.final_outcome === "YES");
   check("resolution flagged sufficient", r.sufficient === true);
-  check("every bound source appears in the record", r.rows.length === 4);
+  check("every bound source appears in the record", r.rows.length === 3);
   check("at least two feeds were readable",
         r.rows.filter((x: any) => x.readable).length >= 2,
         r.rows.filter((x: any) => x.readable).length + " readable");
