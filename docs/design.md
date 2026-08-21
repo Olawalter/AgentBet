@@ -38,14 +38,17 @@ after capital is committed. Freezing the *URL* does not freeze the *content*.
 **subject** (e.g. `BTC/USD`), not a URL. The URLs for that subject are contract
 constants — multiple, mutually independent operators:
 
-| Subject | Independent sources |
+| Subject | Independent sources (historical candle endpoints) |
 |---|---|
-| `BTC/USD` | Bitstamp, Gemini, Bitfinex, CoinGecko |
-| `ETH/USD` | same four operators |
+| `BTC/USD` | Bitfinex, Gemini, CoinGecko |
+| `ETH/USD` | the same three operators |
+
+Bitstamp was in this list and was removed: an on-chain probe showed it answers
+from a developer machine but is unreachable from validators.
 
 Properties this buys:
-- **independent** — no participant, including the creator, can edit an exchange's
-  public ticker;
+- **independent** — no participant, including the creator, can edit an
+  exchange's published candle history;
 - **corroborated** — a single lying or broken feed cannot decide a market
   (≥2 must agree within tolerance);
 - **integrity-bound** — each fetched body is excerpted and the excerpt is
@@ -69,13 +72,23 @@ the BTC demo — the market row carries its rule.
 `observed_price (comparator) threshold` → YES/NO, decided by **Python integer
 math**, not by a model. The model is not asked what it thinks the price is.
 
-**Honest limitation, deliberately surfaced:** a spot ticker answers *"is it at or
-above X at resolution time"*. It cannot answer *"did it ever touch X during the
-window"* — that needs historical OHLC, which only some providers serve, which
-would weaken source independence. So the rule is **spot-at-resolution**, and
-market questions must be worded that way. The README says this in the same
-words; a market that claims to answer "ever reached" using spot data would be a
-narrative overclaim (S12).
+**The observation is anchored to a predetermined instant, not to resolve time.**
+The price is observed at `resolution_start` — fixed at creation, the moment
+staking closes. The bound URLs are historical-candle queries for that instant
+(the instant is baked into the Bitfinex and CoinGecko URLs at creation; Gemini's
+rolling candles are filtered by timestamp in contract code), and every extractor
+validates the operator's own candle timestamp against `[instant, instant+300s]`.
+Whoever runs `resolve_market`, and whenever they run it inside the window, they
+get the same observation — there is no favourable live-price moment to choose.
+
+**Honest limitation, deliberately surfaced:** one instant answers *"was it at or
+above X at the observation instant"*. It cannot answer *"did it ever touch X
+during the window"* — that needs full OHLC-range rules, which is future work.
+Market questions must be worded to the instant, and the create form generates
+them that way. The instant's observability across ≥2 independent operators is
+also why a price market's resolution window is capped at 24h past the instant
+(`MAX_PRICE_RESOLUTION_WINDOW`), and why resolution is legal only inside
+`[resolution_start, resolution_deadline]`.
 
 ### `EVENT_CLAIM` (semantic — this is where GenLayer is load-bearing)
 The contract fetches the cited allowlisted pages, then asks the model to judge

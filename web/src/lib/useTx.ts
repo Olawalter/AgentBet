@@ -2,18 +2,15 @@
 
 import { useCallback, useState } from "react";
 import type { TxState } from "./types";
-import type { WriteHooks } from "./contract";
-import { WrongNetworkError } from "./network";
-
-type Runner = (hooks: WriteHooks) => Promise<string>;
+import { classifyWriteError, runTransaction, type RunOptions, type Runner } from "./tx";
 
 /**
- * Drives one write through its real lifecycle and refuses to shortcut it.
+ * React binding over `runTransaction` (see tx.ts for the rules it enforces).
  *
- * `submitted` and `finalized` are different states and the UI shows them as
- * different states: a submitted transaction has moved no value. The optional
- * `after` callback runs only once the transaction is FINALIZED, and is where
- * callers re-read contract state — the UI never assumes what the write did.
+ * `fail(err)` lets a page record a client-side refusal — for example a final
+ * pre-submit deadline check that found the window already closed — in the same
+ * visual state as an on-chain rejection, without sending a transaction the
+ * contract would reject anyway.
  */
 export function useTx() {
   const [tx, setTx] = useState<TxState>({ phase: "idle" });
@@ -21,38 +18,14 @@ export function useTx() {
   const reset = useCallback(() => setTx({ phase: "idle" }), []);
 
   const run = useCallback(
-    async (runner: Runner, after?: () => Promise<void> | void) => {
-      setTx({ phase: "awaiting_wallet", note: "Confirm in your wallet" });
-      try {
-        await runner({
-          onSubmitted: (hash) =>
-            setTx({ phase: "submitted", hash, note: "Submitted to StudioNet" }),
-          onPending: () =>
-            setTx((s) => ({
-              ...s,
-              phase: "pending",
-              note: "Awaiting validator consensus and finalization",
-            })),
-        });
-        setTx((s) => ({ ...s, phase: "finalized", note: "Finalized on-chain" }));
-        if (after) await after();
-        return true;
-      } catch (e: unknown) {
-        const err = e as Error & { code?: number };
-        let message = err?.message ?? "Transaction failed.";
-        if (err instanceof WrongNetworkError) {
-          message = err.message;
-        } else if (err?.code === 4001 || /user rejected|denied/i.test(message)) {
-          message = "You rejected the transaction in your wallet.";
-        } else if (/insufficient funds/i.test(message)) {
-          message = "Insufficient GEN balance for this stake.";
-        }
-        setTx((s) => ({ ...s, phase: "failed", error: message }));
-        return false;
-      }
-    },
+    (runner: Runner, opts?: RunOptions) => runTransaction(runner, setTx, opts),
     [],
   );
 
-  return { tx, run, reset };
+  const fail = useCallback((err: unknown) => {
+    const c = classifyWriteError(err);
+    setTx({ phase: "failed", error: c.message, errorKind: c.kind });
+  }, []);
+
+  return { tx, run, reset, fail };
 }

@@ -137,12 +137,28 @@ export function TxStatus({ tx, onDismiss }: { tx: TxState; onDismiss?: () => voi
   const order = ["awaiting_wallet", "submitted", "pending", "finalized"];
   const current = order.indexOf(tx.phase);
   const failed = tx.phase === "failed";
+  // A refusal caught before signing never became a transaction, so calling it
+  // a "Transaction failed" would misdescribe what happened.
+  const neverSent = failed && !tx.hash;
+  const heading = !failed
+    ? "Transaction"
+    : tx.errorKind === "resolution_closed"
+      ? "Resolution window expired"
+      : tx.errorKind === "resolution_not_open"
+        ? "Resolution not open yet"
+        : tx.errorKind === "staking_closed"
+          ? "Staking closed"
+          : tx.errorKind === "wrong_network"
+            ? "Wrong network"
+            : neverSent
+              ? "Not submitted"
+              : "Transaction failed";
 
   return (
     <Panel className="p-4 mt-4">
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1">
-          <Label>{failed ? "Transaction failed" : "Transaction"}</Label>
+          <Label>{heading}</Label>
           {failed ? (
             <p className="text-[13px] text-no mt-2 leading-relaxed">{tx.error}</p>
           ) : (

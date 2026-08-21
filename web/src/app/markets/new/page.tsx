@@ -6,19 +6,26 @@ import { createMarket, getConfig, listMarkets } from "@/lib/contract";
 import type { Config } from "@/lib/types";
 import { useWallet } from "@/lib/wallet";
 import { useTx } from "@/lib/useTx";
+import { useNow } from "@/lib/useNow";
+import {
+  MAX_PRICE_RESOLUTION_WINDOW_SECONDS,
+  RESOLUTION_WINDOW_OPTIONS,
+  STAKING_OPEN_OPTIONS,
+  describeDuration,
+  validateMarketTiming,
+} from "@/lib/rules";
+import { formatEpoch } from "@/lib/format";
 import { Panel, Label, Button, TxStatus, BackLink } from "@/components/ui";
 
-const HOURS = [
-  { label: "1 hour", value: 3600 },
-  { label: "6 hours", value: 21600 },
-  { label: "24 hours", value: 86400 },
-  { label: "7 days", value: 604800 },
-];
+/** Mirrors the contract's MIN_MARKET_WINDOW until get_config has loaded; the
+ * contract's own value replaces it as soon as the read returns. */
+const FALLBACK_MIN_MARKET_WINDOW = 120;
 
 export default function NewMarketPage() {
   const router = useRouter();
   const { address, wrongNetwork, connect, switchNetwork } = useWallet();
-  const { tx, run, reset } = useTx();
+  const { tx, run, reset, fail } = useTx();
+  const nowSec = useNow(15_000);
 
   const [cfg, setCfg] = useState<Config | null>(null);
   const [rule, setRule] = useState<"SPOT_THRESHOLD" | "EVENT_CLAIM">("SPOT_THRESHOLD");
@@ -29,8 +36,8 @@ export default function NewMarketPage() {
   const [description, setDescription] = useState("");
   const [claimSubject, setClaimSubject] = useState("");
   const [sourceText, setSourceText] = useState("");
-  const [openFor, setOpenFor] = useState(3600);
-  const [windowFor, setWindowFor] = useState(86400);
+  const [openFor, setOpenFor] = useState(STAKING_OPEN_OPTIONS[0].seconds);
+  const [windowFor, setWindowFor] = useState(RESOLUTION_WINDOW_OPTIONS[3].seconds);
 
   useEffect(() => {
     getConfig().then(setCfg).catch(() => setCfg(null));
@@ -39,27 +46,55 @@ export default function NewMarketPage() {
   const thresholdCents = Math.round(Number(threshold || "0") * 100);
   const sources = sourceText.split("\n").map((s) => s.trim()).filter(Boolean);
   const busy = ["awaiting_wallet", "submitted", "pending"].includes(tx.phase);
+  const minMarketWindow = cfg?.min_market_window ?? FALLBACK_MIN_MARKET_WINDOW;
+
+  // The same rule the contract applies, evaluated continuously so the page can
+  // explain a problem before the wallet is ever opened. Re-run at submit time
+  // with a fresh clock — see submit().
+  const timing = validateMarketTiming({
+    nowSec, openFor, windowFor, ruleKind: rule, minMarketWindow,
+  });
 
   const autoQuestion =
     rule === "SPOT_THRESHOLD"
-      ? `Will ${subject} be at or ${comparator === ">=" ? "above" : "below"} $${Number(threshold || 0).toLocaleString()} at resolution?`
+      ? `Will ${subject} be at or ${comparator === ">=" ? "above" : "below"} $${Number(threshold || 0).toLocaleString()} at the observation instant (when staking closes)?`
       : "";
 
   const effectiveQuestion = question.trim() || autoQuestion;
-  const conditionText =
+
+  // Settlement is anchored to the predetermined observation instant. The
+  // condition the contract records names that instant explicitly so nobody
+  // reading it later can mistake "when resolved" for the datum.
+  // The epoch is included verbatim because this string is immutable on-chain and
+  // a reader must be able to check it against resolution_start exactly — a
+  // minute-rounded timestamp could sit up to 59s away from the real datum.
+  const conditionFor = (start: number) =>
     rule === "SPOT_THRESHOLD"
-      ? `${subject} ${comparator} ${thresholdCents / 100} at the observation instant (the moment staking closes), from the contract's independent historical feeds`
+      ? `${subject} ${comparator} ${thresholdCents / 100} observed at the predetermined instant ` +
+        `${start} (resolution_start, ${formatEpoch(start)}), median of the contract's ` +
+        `independent historical feeds`
       : `Independent cited sources establish that: ${claimSubject.trim()}`;
 
   const valid =
-    !!address && !wrongNetwork && effectiveQuestion.length > 0 &&
+    !!address && !wrongNetwork && effectiveQuestion.length > 0 && timing.ok &&
     (rule === "SPOT_THRESHOLD"
       ? thresholdCents > 0
       : claimSubject.trim().length > 0 && sources.length > 0);
 
   const submit = async () => {
     if (!address || !valid) return;
-    const start = Math.floor(Date.now() / 1000) + openFor;
+    // Final validation immediately before submission, against a fresh clock:
+    // the displayed check may be up to 15s old. The contract re-checks every
+    // bound with its own consensus clock when the transaction arrives.
+    const fresh = validateMarketTiming({
+      nowSec: Math.floor(Date.now() / 1000), openFor, windowFor,
+      ruleKind: rule, minMarketWindow,
+    });
+    if (!fresh.ok) {
+      fail(new Error(fresh.errors.join(" ")));
+      return;
+    }
+    const start = fresh.resolutionStart;
     const ok = await run(
       (hooks) =>
         createMarket(
@@ -71,17 +106,19 @@ export default function NewMarketPage() {
             subject: rule === "SPOT_THRESHOLD" ? subject : claimSubject.trim(),
             comparator: rule === "SPOT_THRESHOLD" ? comparator : "",
             thresholdCents: rule === "SPOT_THRESHOLD" ? thresholdCents : 0,
-            conditionText,
+            conditionText: conditionFor(start),
             resolutionStart: start,
-            resolutionDeadline: start + windowFor,
+            resolutionDeadline: fresh.resolutionDeadline,
             claimSources: rule === "EVENT_CLAIM" ? sources : [],
           },
           hooks,
         ),
-      async () => {
-        const page = await listMarkets(0, 50);
-        const latest = page.items[page.items.length - 1];
-        if (latest) router.push(`/markets/${latest.id}`);
+      {
+        after: async () => {
+          const page = await listMarkets(0, 50);
+          const latest = page.items[page.items.length - 1];
+          if (latest) router.push(`/markets/${latest.id}`);
+        },
       },
     );
     if (!ok) return;
@@ -162,12 +199,14 @@ export default function NewMarketPage() {
                 </div>
               </div>
               <p className="mt-3 text-[11.5px] text-bone-faint leading-relaxed">
-                The contract reads its own independent feeds, requires at least
-                two to corroborate within {((cfg?.price_tolerance_bps ?? 100) / 100).toFixed(0)}%,
-                and compares the median to your threshold. This is a
-                spot-at-resolution rule: it answers whether the price is above
-                the threshold when the market resolves, not whether it ever
-                touched it earlier.
+                The settlement price is observed at the <span className="text-bone-dim">predetermined
+                observation instant</span> — the moment staking closes — not at whatever
+                moment someone later runs the resolution. Validators fetch that instant&apos;s
+                candle from the contract&apos;s independent feeds, require at least two to
+                corroborate within {((cfg?.price_tolerance_bps ?? 100) / 100).toFixed(0)}%, and
+                contract arithmetic compares the median to your threshold. It answers
+                whether the price was above the threshold at that instant, not whether it
+                ever touched it earlier.
               </p>
             </>
           ) : (
@@ -227,39 +266,66 @@ export default function NewMarketPage() {
             <div>
               <div className="label mb-1.5">Staking stays open for</div>
               <div className="grid grid-cols-4 gap-1.5">
-                {HOURS.map((h) => (
+                {STAKING_OPEN_OPTIONS.map((h) => (
                   <button
-                    key={h.value}
-                    onClick={() => setOpenFor(h.value)}
+                    key={h.seconds}
+                    onClick={() => setOpenFor(h.seconds)}
                     className={`h-9 text-[11.5px] border ${
-                      openFor === h.value ? "border-amber text-amber" : "border-ink-line text-bone-faint hover:text-bone-dim"
+                      openFor === h.seconds ? "border-amber text-amber" : "border-ink-line text-bone-faint hover:text-bone-dim"
                     }`}
                   >
                     {h.label}
                   </button>
                 ))}
               </div>
+              <p className="mt-2 text-[11px] text-bone-faint leading-relaxed">
+                Staking closes at the <span className="text-bone-dim">observation instant</span>
+                {rule === "SPOT_THRESHOLD" && " — the moment the settlement price is taken"}:{" "}
+                <span className="tnum text-bone-dim">{formatEpoch(nowSec + openFor)}</span>
+              </p>
             </div>
             <div>
-              <div className="label mb-1.5">Resolution window</div>
+              <div className="label mb-1.5">Resolution window after the instant</div>
               <div className="grid grid-cols-4 gap-1.5">
-                {HOURS.map((h) => (
+                {RESOLUTION_WINDOW_OPTIONS.map((h) => (
                   <button
-                    key={h.value}
-                    onClick={() => setWindowFor(h.value)}
+                    key={h.seconds}
+                    onClick={() => setWindowFor(h.seconds)}
                     className={`h-9 text-[11.5px] border ${
-                      windowFor === h.value ? "border-amber text-amber" : "border-ink-line text-bone-faint hover:text-bone-dim"
+                      windowFor === h.seconds ? "border-amber text-amber" : "border-ink-line text-bone-faint hover:text-bone-dim"
                     }`}
                   >
                     {h.label}
                   </button>
                 ))}
               </div>
+              <p className="mt-2 text-[11px] text-bone-faint leading-relaxed">
+                Resolution may run until{" "}
+                <span className="tnum text-bone-dim">{formatEpoch(nowSec + openFor + windowFor)}</span>.
+{" "}Maximum resolution window for a price market:{" "}
+                <span className="text-bone-dim">
+                  {describeDuration(MAX_PRICE_RESOLUTION_WINDOW_SECONDS)} after the instant (contract limit)
+                </span>
+                . The price itself is read only at the instant, however long this window is.
+                After the deadline the market can only be recovered for refunds.
+              </p>
             </div>
           </div>
+
+          {!timing.ok && (
+            <div className="mt-4 border border-no/40 bg-no/5 p-3">
+              <p className="label text-no">Timing the contract would reject</p>
+              <ul className="mt-1.5 space-y-1">
+                {timing.errors.map((e) => (
+                  <li key={e} className="text-[12px] text-bone-dim">{e}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <p className="mt-3 text-[11.5px] text-bone-faint leading-relaxed">
             If the market still has not resolved{" "}
-            {Math.round((cfg?.recovery_grace ?? 259200) / 86400)} days after the
+            {describeDuration(cfg?.recovery_grace ?? 259200)} after the
             resolution deadline, any participant can permanently open refunds.
             Funds cannot strand.
           </p>
@@ -269,7 +335,15 @@ export default function NewMarketPage() {
         <Panel className="p-6" tick>
           <Label>The contract will record</Label>
           <p className="mt-3 text-[14px] text-bone leading-snug">{effectiveQuestion || "—"}</p>
-          <p className="mt-2 text-[12.5px] text-bone-dim leading-relaxed">{conditionText}</p>
+          <p className="mt-2 text-[12.5px] text-bone-dim leading-relaxed">
+            {conditionFor(nowSec + openFor)}
+          </p>
+          {rule === "SPOT_THRESHOLD" && (
+            <p className="mt-2 text-[11px] text-bone-faint leading-relaxed">
+The instant is fixed when you press Create and is then immutable; the
+              preview above tracks the current clock until then.
+            </p>
+          )}
 
           {!address ? (
             <Button className="mt-5" full onClick={() => void connect()}>Connect wallet</Button>

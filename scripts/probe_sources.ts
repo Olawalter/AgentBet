@@ -37,10 +37,10 @@ async function main() {
   await writeAndSettle(
     owner, "create_market (probe)", "create_market",
     [
-      "PROBE — is BTC/USD at or above $1 at resolution?",
+      "PROBE — was BTC/USD at or above $1 at the observation instant?",
       "Throwaway market used to probe live feed reachability from validators.",
       "SPOT_THRESHOLD", "BTC/USD", ">=", 100,
-      "BTC/USD >= 1.00 at resolution time",
+      "BTC/USD >= 1.00 observed at the predetermined instant (resolution_start)",
       start, start + 3600, [],
     ],
     0n,
@@ -76,7 +76,7 @@ async function main() {
   const m: any = await read("get_market", [mid]);
   console.log("  bound sources:");
   for (const u of m.resolution_sources) console.log("   -", u);
-  console.log("\n  (staking window ends at", m.resolution_start, "— resolve after that)");
+  console.log("\n  (observation instant / staking close:", m.resolution_start, "— resolve between it and the deadline)");
   console.log("  run:  AGENTBET_ADDRESS=... npm run state --", mid);
 }
 

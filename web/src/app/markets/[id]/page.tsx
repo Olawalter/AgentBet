@@ -10,6 +10,8 @@ import {
 import type { Market, Position, Claimable, Resolution } from "@/lib/types";
 import { useWallet } from "@/lib/wallet";
 import { useTx } from "@/lib/useTx";
+import { useNow } from "@/lib/useNow";
+import { resolutionWindow, stakingOpen } from "@/lib/timing";
 import {
   toGen, genToWei, impliedPct, formatEpoch, relativeTo, shortAddress, hostOf,
 } from "@/lib/format";
@@ -20,7 +22,10 @@ import {
 export default function MarketPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { address, wrongNetwork, connect, switchNetwork } = useWallet();
-  const { tx, run, reset } = useTx();
+  const { tx, run, reset, fail } = useTx();
+  // Ticks every second so deadline-gated controls disappear AS the deadline
+  // passes, not only on the next interaction.
+  const nowSec = useNow();
 
   const [market, setMarket] = useState<Market | null>(null);
   const [position, setPosition] = useState<Position | null>(null);
@@ -32,11 +37,16 @@ export default function MarketPage({ params }: { params: Promise<{ id: string }>
   const [amount, setAmount] = useState("");
   const [confirming, setConfirming] = useState(false);
 
-  /** Single source of truth: after any write we re-read, never assume. */
+  /** Single source of truth: after any write we re-read, never assume.
+   *
+   * A refresh failure must not blank the page: after a rejected write the user
+   * needs to keep seeing WHY it was rejected. Only the very first load may show
+   * the full-page error state; later failures leave the last known state up. */
   const refresh = useCallback(async () => {
     try {
       const m = await getMarket(id);
       setMarket(m);
+      setLoadError(null);
       const [r] = await Promise.all([getResolution(id)]);
       setResolution(r);
       if (address) {
@@ -51,7 +61,11 @@ export default function MarketPage({ params }: { params: Promise<{ id: string }>
         setClaim(null);
       }
     } catch (e) {
-      setLoadError((e as Error).message);
+      // Only surface a load error if we have nothing to show at all.
+      setMarket((prev) => {
+        if (!prev) setLoadError((e as Error).message);
+        return prev;
+      });
     }
   }, [id, address]);
 
@@ -80,19 +94,66 @@ export default function MarketPage({ params }: { params: Promise<{ id: string }>
 
   const wei = genToWei(amount);
   const isOpen = market.status === "open";
-  const canStake = isOpen && !!address && !wrongNetwork && !!wei && wei > 0n;
+  const isPrice = market.rule_kind === "SPOT_THRESHOLD";
   const isCreator = address?.toLowerCase() === market.creator.toLowerCase();
-  const nowSec = Math.floor(Date.now() / 1000);
-  const resolutionOpen = nowSec >= Number(market.resolution_start);
   const busy = ["awaiting_wallet", "submitted", "pending"].includes(tx.phase);
+
+  // One place decides where this market sits on its timeline. It mirrors the
+  // contract's regimes exactly (see lib/timing.ts); the contract re-checks
+  // every bound with its own consensus clock when a transaction arrives.
+  const win = resolutionWindow(market, nowSec);
+  const instantReached = !stakingOpen(market, nowSec);
+  // Staking is gated on TIME as well as status: the contract rejects a stake
+  // once now >= resolution_start, whatever the stored status still says.
+  const stakingLive = isOpen && !instantReached;
+  const canStake = stakingLive && !!address && !wrongNetwork && !!wei && wei > 0n;
 
   const doStake = async () => {
     if (!address || !wei) return;
+    // Final check against a fresh clock immediately before submitting.
+    if (!stakingOpen(market, Math.floor(Date.now() / 1000))) {
+      fail(new Error("the staking window has closed"));
+      await refresh();
+      return;
+    }
     const ok = await run(
       (hooks) => stake(address, id, side, wei, hooks),
-      refresh,
+      { refresh },
     );
     if (ok) { setAmount(""); setConfirming(false); }
+  };
+
+  /**
+   * Resolve with a final check immediately before submission. This is not the
+   * enforcement — the contract is — it just avoids sending a transaction we
+   * already know will revert, and if the deadline slips past between the
+   * click and the send, the UI reports the expiry plainly instead of a raw
+   * revert over a stale "Run resolution" button.
+   */
+  const doResolve = async () => {
+    if (!address) return;
+    let fresh: Market;
+    try {
+      fresh = await getMarket(id);
+      setMarket(fresh);
+    } catch (e) {
+      fail(e);
+      return;
+    }
+    const check = resolutionWindow(fresh, Math.floor(Date.now() / 1000));
+    if (check.state !== "open") {
+      // Each closed state gets its own honest reason — a market someone else
+      // already resolved must not be reported as "the deadline passed".
+      const why =
+        check.state === "not_open"
+          ? "the resolution window has not opened yet"
+          : check.state === "terminal"
+            ? `this market is already ${fresh.status} — there is nothing left to resolve`
+            : "the resolution deadline has passed";
+      fail(new Error(why));
+      return;
+    }
+    await run((hooks) => resolveMarket(address, id, hooks), { refresh });
   };
 
   return (
@@ -162,16 +223,41 @@ export default function MarketPage({ params }: { params: Promise<{ id: string }>
               <div className="flex flex-wrap gap-x-4">
                 <dt className="w-[150px] text-bone-faint shrink-0">Rule</dt>
                 <dd className="text-bone flex-1">
-                  {market.rule_kind === "SPOT_THRESHOLD"
-                    ? `Spot price of ${market.subject} ${market.comparator} $${market.threshold_text}, evaluated at resolution time`
+                  {isPrice
+                    ? `Price of ${market.subject} ${market.comparator} $${market.threshold_text}, observed at the predetermined instant below — not at whatever moment the resolve transaction is sent`
                     : `Semantic judgment on: ${market.subject}`}
                 </dd>
               </div>
+              {isPrice && (
+                <div className="flex flex-wrap gap-x-4">
+                  <dt className="w-[150px] text-bone-faint shrink-0">Price observed at</dt>
+                  <dd className="tnum text-bone flex-1">
+                    {formatEpoch(market.resolution_start)}{" "}
+                    <span className="text-bone-faint">(epoch {market.resolution_start})</span>
+                    <span className="block text-[11px] text-bone-faint mt-0.5">
+                      Fixed at creation. Validators take the first candle at or within
+                      300s after this instant from every bound feed; the caller cannot
+                      choose a different moment.
+                    </span>
+                  </dd>
+                </div>
+              )}
               <div className="flex flex-wrap gap-x-4">
                 <dt className="w-[150px] text-bone-faint shrink-0">Staking closes</dt>
                 <dd className="tnum text-bone flex-1">
                   {formatEpoch(market.resolution_start)}{" "}
-                  <span className="text-bone-faint">({relativeTo(market.resolution_start)})</span>
+                  <span className="text-bone-faint">({relativeTo(market.resolution_start, nowSec * 1000)})</span>
+                </dd>
+              </div>
+              <div className="flex flex-wrap gap-x-4">
+                <dt className="w-[150px] text-bone-faint shrink-0">Resolution deadline</dt>
+                <dd className="tnum text-bone flex-1">
+                  {formatEpoch(market.resolution_deadline)}{" "}
+                  <span className="text-bone-faint">({relativeTo(market.resolution_deadline, nowSec * 1000)})</span>
+                  <span className="block text-[11px] text-bone-faint mt-0.5">
+                    Resolution may run between the observation instant and this deadline.
+                    After it, nothing can settle the market except recovery.
+                  </span>
                 </dd>
               </div>
               <div className="flex flex-wrap gap-x-4">
@@ -206,19 +292,68 @@ export default function MarketPage({ params }: { params: Promise<{ id: string }>
             <Label>GenLayer adjudication</Label>
             {!resolution?.exists ? (
               <div className="mt-4">
-                <p className="text-[13px] text-bone-dim">
-                  {isOpen
-                    ? "Not started. Resolution opens once the staking window closes."
-                    : "Awaiting resolution. Anyone may trigger it."}
-                </p>
-                {!isOpen && resolutionOpen && address && !wrongNetwork && (
-                  <Button
-                    className="mt-4"
-                    disabled={busy}
-                    onClick={() => void run((h) => resolveMarket(address, id, h), refresh)}
-                  >
-                    Run resolution
-                  </Button>
+                {win.state === "not_open" && (
+                  <>
+                    <p className="label text-bone-dim">Not started</p>
+                    <p className="mt-1.5 text-[13px] text-bone-dim leading-relaxed">
+                      Resolution opens at the observation instant,{" "}
+                      <span className="tnum text-bone">{formatEpoch(market.resolution_start)}</span>
+                      {isPrice && " — the price is observed at that instant"}.
+                    </p>
+                  </>
+                )}
+                {win.state === "open" && (
+                  <>
+                    <p className="label text-yes">Resolution open</p>
+                    <p className="mt-1.5 text-[13px] text-bone-dim leading-relaxed">
+                      Anyone may run it until the deadline,{" "}
+                      <span className="tnum text-bone">{formatEpoch(market.resolution_deadline)}</span>{" "}
+                      <span className="text-bone-faint">
+                        ({win.secondsLeft < 120
+                          ? `${win.secondsLeft}s left`
+                          : relativeTo(market.resolution_deadline, nowSec * 1000)})
+                      </span>.
+                      {win.secondsLeft < 120 && (
+                        <span className="block text-no mt-1">
+                          Finalization takes minutes — a resolution started now will very
+                          likely be rejected by the contract as late.
+                        </span>
+                      )}
+                      {isPrice &&
+                        " Running it earlier or later changes nothing — the price was fixed at the observation instant."}
+                    </p>
+                    {address && !wrongNetwork && (
+                      <Button className="mt-4" disabled={busy} onClick={() => void doResolve()}>
+                        Run resolution
+                      </Button>
+                    )}
+                  </>
+                )}
+                {win.state === "closed" && (
+                  <>
+                    <p className="label text-no">Resolution closed</p>
+                    <p className="mt-1.5 text-[13px] text-bone-dim leading-relaxed">
+                      The resolution deadline passed{" "}
+                      <span className="tnum text-bone">{formatEpoch(market.resolution_deadline)}</span>{" "}
+                      <span className="text-bone-faint">({relativeTo(market.resolution_deadline, nowSec * 1000)})</span>{" "}
+                      without a resolution. The contract no longer accepts one. Recovery opens{" "}
+                      <span className="tnum text-bone">{formatEpoch(market.recovery_deadline)}</span>, after
+                      which any participant can open refunds and every stake goes back.
+                    </p>
+                  </>
+                )}
+                {win.state === "recoverable" && (
+                  <>
+                    <p className="label text-no">Resolution closed — recovery open</p>
+                    <p className="mt-1.5 text-[13px] text-bone-dim leading-relaxed">
+                      The resolution deadline passed with no resolution, and the recovery
+                      deadline has now passed too. Any participant can open refunds from the
+                      actions panel; every stake is returned in full.
+                    </p>
+                  </>
+                )}
+                {win.state === "terminal" && (
+                  <p className="text-[13px] text-bone-dim">This market reached a terminal state without a resolution record.</p>
                 )}
               </div>
             ) : (
@@ -242,6 +377,22 @@ export default function MarketPage({ params }: { params: Promise<{ id: string }>
                     </span>
                   )}
                 </div>
+                {isPrice && Number(resolution.observed_at ?? 0) > 0 && (
+                  <p className="mt-3 text-[12px] text-bone-dim leading-relaxed">
+                    <span className="label">Settlement datum</span>{" "}
+                    price observed at the predetermined instant{" "}
+                    <span className="tnum text-bone">{formatEpoch(resolution.observed_at!)}</span>{" "}
+                    <span className="text-bone-faint">(epoch {resolution.observed_at})</span>
+                    {resolution.resolved_at && Number(resolution.resolved_at) > 0 && (
+                      <>
+                        {" "}— resolution transaction ran{" "}
+                        <span className="tnum">{formatEpoch(resolution.resolved_at)}</span>.
+                        The second timestamp is when someone pressed the button; it did not
+                        change what was observed.
+                      </>
+                    )}
+                  </p>
+                )}
                 {resolution.reason && (
                   <p className="mt-3 text-[13px] leading-relaxed text-bone-dim">{resolution.reason}</p>
                 )}
@@ -325,7 +476,7 @@ export default function MarketPage({ params }: { params: Promise<{ id: string }>
                                 (h) => claim.kind === "refund"
                                   ? claimRefund(address, id, h)
                                   : claimWinnings(address, id, h),
-                                refresh,
+                                { refresh },
                               )
                             }
                           >
@@ -377,8 +528,20 @@ export default function MarketPage({ params }: { params: Promise<{ id: string }>
             )}
           </Panel>
 
+          {/* Staking closed by the clock, though the status has not been moved yet */}
+          {isOpen && instantReached && address && (
+            <Panel className="p-6">
+              <Label>Staking closed</Label>
+              <p className="mt-2 text-[13px] text-bone-dim leading-relaxed">
+                The observation instant has passed, so the contract no longer accepts
+                stakes on this market — even though its stored status is still
+                &ldquo;open&rdquo; until someone closes it.
+              </p>
+            </Panel>
+          )}
+
           {/* Stake form */}
-          {isOpen && address && (
+          {stakingLive && address && (
             <Panel className="p-6">
               <Label>Take a side</Label>
               {position?.exists && (
@@ -468,37 +631,41 @@ export default function MarketPage({ params }: { params: Promise<{ id: string }>
                 These are permissionless: anyone may move a market forward.
               </p>
               <div className="mt-4 space-y-2">
-                {isOpen && resolutionOpen && (
+                {isOpen && instantReached && (
                   <Button full variant="ghost" disabled={busy}
-                    onClick={() => void run((h) => closeMarket(address, id, h), refresh)}>
+                    onClick={() => void run((h) => closeMarket(address, id, h), { refresh })}>
                     Close staking
                   </Button>
                 )}
-                {(market.status === "closed") && (
-                  <Button full variant="ghost" disabled={busy}
-                    onClick={() => void run((h) => resolveMarket(address, id, h), refresh)}>
+                {/* Only while the contract would accept it: start <= now <= deadline. */}
+                {win.state === "open" && (
+                  <Button full variant="ghost" disabled={busy} onClick={() => void doResolve()}>
                     Run resolution
                   </Button>
                 )}
-                {["open", "closed"].includes(market.status) &&
-                  nowSec > Number(market.recovery_deadline) && (
-                    <Button full variant="ghost" disabled={busy}
-                      onClick={() => void run((h) => markUnresolved(address, id, h), refresh)}>
-                      Open refunds (recovery)
-                    </Button>
-                  )}
+                {win.state === "closed" && (
+                  <p className="text-[12px] text-bone-faint leading-relaxed">
+                    Resolution closed — the deadline has passed. Recovery opens{" "}
+                    {relativeTo(market.recovery_deadline, nowSec * 1000)}.
+                  </p>
+                )}
+                {win.state === "recoverable" && (
+                  <Button full variant="ghost" disabled={busy}
+                    onClick={() => void run((h) => markUnresolved(address, id, h), { refresh })}>
+                    Open refunds (recovery)
+                  </Button>
+                )}
                 {isCreator && isOpen && market.escrow_total === "0" && (
                   <Button full variant="danger" disabled={busy}
-                    onClick={() => void run((h) => cancelMarket(address, id, h), refresh)}>
+                    onClick={() => void run((h) => cancelMarket(address, id, h), { refresh })}>
                     Cancel market
                   </Button>
                 )}
-                {!isOpen && market.status !== "closed" &&
-                  !(["open", "closed"].includes(market.status)) && (
-                    <p className="text-[12px] text-bone-faint">
-                      No actions available in this state.
-                    </p>
-                  )}
+                {win.state === "terminal" && (
+                  <p className="text-[12px] text-bone-faint">
+                    No actions available in this state.
+                  </p>
+                )}
               </div>
             </Panel>
           )}

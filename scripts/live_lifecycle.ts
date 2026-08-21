@@ -55,11 +55,11 @@ async function main() {
   await writeAndSettle(
     owner, "create_market", "create_market",
     [
-      "Will BTC/USD be at or above $1,000 at resolution?",
-      "Lifecycle proof market. Settled from four independent exchange feeds " +
-      "fetched by validators under consensus.",
+      "Will BTC/USD be at or above $1,000 at the observation instant (resolution_start)?",
+      "Lifecycle proof market. Settled from the price at the predetermined observation " +
+      "instant, fetched by validators from independent historical feeds under consensus.",
       "SPOT_THRESHOLD", "BTC/USD", ">=", 100_000,   // $1,000.00 in cents
-      "BTC/USD >= 1000.00 at resolution time",
+      "BTC/USD >= 1000.00 observed at the predetermined instant (resolution_start)",
       start, start + 3600, [],
     ],
     0n,

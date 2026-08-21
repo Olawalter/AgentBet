@@ -356,7 +356,7 @@ class Book:
         self.vm.sender = sender or self.creator
         return self.c.create_market(
             question or f"Will {subject} be at or above "
-                        f"${threshold_cents // 100:,} at resolution?",
+                        f"${threshold_cents // 100:,} at the observation instant?",
             "Settled from independent exchange feeds fetched under consensus.",
             "SPOT_THRESHOLD", subject, comparator, threshold_cents,
             f"{subject} {comparator} {threshold_cents // 100} at the observation instant",

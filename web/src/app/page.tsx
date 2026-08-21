@@ -56,7 +56,7 @@ export default function Home() {
             {
               n: "02",
               t: "GenLayer decides",
-              d: "At resolution, validators independently fetch the market's bound sources and must agree on the outcome and on the record of what they read.",
+              d: "At the market's predetermined instant, validators independently fetch its bound sources and must agree on the outcome and on the record of what they read.",
             },
             {
               n: "03",

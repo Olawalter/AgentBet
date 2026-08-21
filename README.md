@@ -91,7 +91,7 @@ instant, and **contract arithmetic** compares the median to the threshold.
         GENLAYER CONSENSUS  ..................  leader + validators must agree on
               |                                 outcome, sufficiency, and the record
               v
-    INDEPENDENT LIVE EVIDENCE
+    INDEPENDENT HISTORICAL EVIDENCE
     bitfinex · gemini · coingecko — historical candles at the bound instant
 ```
 
@@ -290,7 +290,7 @@ Full review: [`docs/security-review.md`](docs/security-review.md).
 
 ## Verified end to end
 
-Full lifecycle against the deployed contract — market #1, **0 failures**:
+Full lifecycle against the deployed contract — market #2, **0 failures**:
 
 ```
 create           0x1ad1afe8…3984   market open, 3 instant-bound feeds
@@ -308,14 +308,19 @@ loser claim      0xa43b9c58…25f1   REJECTED, explained not errored
 The claim step compares wallet balances before and after, so it proves value
 moved rather than that a flag flipped.
 
-Evidence recorded on-chain for that resolution:
+Evidence recorded on-chain for that resolution — read back from the contract
+with `npm run state -- 2`:
 
 ```
-READ  api.gemini.com          64660.13   sha256 aedd631e7829310c99c8…
-READ  api.bitfinex.com        64754.00   sha256 dceb9d86bd7da9cbe303…
-READ  api.coingecko.com       64635.00   sha256 1f269dab12cd64e5051c…
-READ  blockchain.info         64632.44   sha256 308d4f86b621fa25bc84…
+READ    api-pub.bitfinex.com   74502.00   sha256 a48a4c0cdb2cc47b…
+READ    api.gemini.com         74438.00   sha256 1d37db1e5e6f3271…
+READ    api.coingecko.com      (no usable candle for the instant)
 ```
+
+Two independent operators corroborated the instant's price within 1% and the
+median settled the market; the third was fetched but yielded no candle inside
+the observation window, so it contributed nothing. That is the corroboration
+rule doing its job, not a failure.
 
 ---
 
@@ -375,11 +380,11 @@ npm run dev
 
 ## Example market
 
-> **Will BTC/USD be at or above $1,000 at resolution?**
+> **Will BTC/USD be at or above $1,000 at the observation instant?**
 >
-> Rule: `SPOT_THRESHOLD`, BTC/USD `>=` $1,000.00, observed at the bound instant
-> Sources: gemini, bitfinex, coingecko, blockchain.info (contract-fixed)
-> Result: **YES** — four feeds corroborated at $64,635
+> Rule: `SPOT_THRESHOLD`, BTC/USD `>=` $1,000.00, observed at `resolution_start`
+> Sources: bitfinex, gemini, coingecko (contract-fixed, historical candles)
+> Result: **YES** — 2 of 3 operators corroborated $74,438.00 at instant `1787281982`
 
 ---
 

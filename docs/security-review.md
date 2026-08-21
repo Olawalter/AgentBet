@@ -159,9 +159,12 @@ step, not only at the end — in `test_three_winners_cannot_overdraw_the_pool`.
    state-before-transfer ordering and that a second claim emits nothing; they do
    not model a reentrant callback, because the mechanism does not provide one.
 
-3. **Price rules observe one predetermined instant.** They answer "is the price at or above
-   X when the market resolves", not "did it ever touch X during the window".
-   Market wording must match, and the UI says so.
+3. **Price rules observe one predetermined instant.** They answer "was the price
+   at or above X at `resolution_start`" — the instant fixed at creation — not
+   "did it ever touch X during the window", and not "what was the price when
+   someone pressed resolve". Running resolution earlier or later inside the
+   window returns the same observation, so there is no favourable moment for a
+   caller to pick. Market wording must match, and the UI says so.
 
 4. **Feed reachability is an operational dependency.** Bitstamp was removed from
    the allowlist after an on-chain probe showed it is unreachable from
@@ -197,19 +200,19 @@ step, not only at the end — in `test_three_winners_cannot_overdraw_the_pool`.
 
 ## 7. Live verification
 
-Full lifecycle against the deployed contract, market #1 — **0 failures**:
+Full lifecycle against the deployed contract (`0xb372…451A`), market #2 — **0 failures**:
 
 | Step | Transaction | Result |
 |---|---|---|
-| create | `0x67dc34fc…cd8c` | market open, 4 feeds bound |
-| stake YES 0.5 GEN | `0x5d0994fe…88c3` | escrow credited |
-| stake NO 0.25 GEN | `0x7f6091d2…47d9` | escrow 0.75 GEN |
-| late stake | `0x34356be3…67c6` | **rejected**, totals unchanged |
-| resolve | `0xd34a0bba…abb2` | YES, 4/4 feeds read, median $64,635 |
-| claim before window | `0x5ae9e344…a0d19` | **rejected**, escrow untouched |
-| claim | `0xdf188e0a…8ef0` | **balance +750000000000000000 wei exactly** |
-| second claim | `0x3cdcafee…33f7` | **rejected**, balance unchanged |
-| loser claim | `0xc6846b2c…7efd4` | **rejected**, explained not errored |
+| create | `0x1ad1afe8…3984` | market open, 3 instant-bound feeds |
+| stake YES 0.5 GEN | `0x6bcd5881…07cd` | escrow credited |
+| stake NO 0.25 GEN | `0x41ab6e85…c064` | escrow 0.75 GEN |
+| late stake | `0xdf2fa91a…5b18` | **rejected**, totals unchanged |
+| resolve | `0x10e63b50…656c` | YES — 2 of 3 operators corroborated $74,438.00 at instant `1787281982` |
+| claim before window | `0x24969087…eeaa` | **rejected**, escrow untouched |
+| claim | `0xf4733ed1…9266` | **balance +750000000000000000 wei exactly** |
+| second claim | `0x110977b1…8188` | **rejected**, balance unchanged |
+| loser claim | `0xa43b9c58…25f1` | **rejected**, explained not errored |
 
 The claim assertion compares wallet balances before and after, so it proves the
 value moved — not merely that a flag flipped.

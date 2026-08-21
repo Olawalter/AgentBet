@@ -46,19 +46,68 @@ async function read<T>(functionName: string, args: unknown[] = []): Promise<T> {
   })) as T;
 }
 
-/** Pull a human-readable reason out of a reverted receipt. */
-function revertReason(receipt: unknown): string | null {
-  const r = receipt as Record<string, unknown>;
-  const exec = String(
-    (r?.txExecutionResultName as string) ?? (r?.txExecutionResult as string) ?? "",
-  ).toUpperCase();
-  if (!exec.includes("ERROR")) return null;
+/**
+ * Pull a human-readable reason out of a reverted receipt, or null if the
+ * transaction actually succeeded.
+ *
+ * GenLayer FINALIZES reverted transactions, so "finalized" is not "succeeded".
+ * Getting this wrong is the difference between telling a user their resolution
+ * landed and telling them the window expired.
+ *
+ * Where the verdict actually lives (verified against a real reverted StudioNet
+ * transaction, 0x110977b1…8188):
+ *
+ *   consensus_data.leader_receipt[0].execution_result === "ERROR"
+ *   consensus_data.leader_receipt[0].result === {
+ *     status: "rollback",
+ *     payload: "[EXPECTED] this position has already been settled",
+ *   }
+ *
+ * The top-level camelCase fields (`txExecutionResultName`, `txExecutionResult`)
+ * and the `messages[]` array are populated only on the non-studio decode path —
+ * on StudioNet they are undefined and an empty array, so reading only those
+ * reports every revert as a success. They are kept below as a secondary signal
+ * for other networks.
+ */
+export function revertReason(receipt: unknown): string | null {
+  const r = (receipt ?? {}) as Record<string, unknown>;
 
-  const messages = (r?.messages as Array<Record<string, string>>) ?? [];
-  const found = messages.find((m) => m?.errorMessage || m?.message);
-  const raw = found?.errorMessage ?? found?.message ?? "";
+  const leaderField = (r.consensus_data as Record<string, unknown> | undefined)
+    ?.leader_receipt;
+  const leader = (Array.isArray(leaderField) ? leaderField[0] : leaderField) as
+    | Record<string, unknown>
+    | undefined;
+
+  const leaderExec = String(leader?.execution_result ?? "").toUpperCase();
+  const legacyExec = String(
+    (r.txExecutionResultName as string) ?? (r.txExecutionResult as string) ?? "",
+  ).toUpperCase();
+
+  const result = leader?.result as Record<string, unknown> | undefined;
+  const rolledBack = String(result?.status ?? "").toLowerCase() === "rollback";
+
+  const failed =
+    leaderExec.includes("ERROR") || legacyExec.includes("ERROR") || rolledBack;
+  if (!failed) return null;
+
+  // Prefer the contract's own guard message, then the runtime's error text,
+  // then the legacy messages[] array.
+  const genvm = leader?.genvm_result as Record<string, unknown> | undefined;
+  const messages = (r.messages as Array<Record<string, string>> | undefined) ?? [];
+  const legacy = messages.find((m) => m?.errorMessage || m?.message);
+
+  const raw =
+    (typeof result?.payload === "string" ? result.payload : "") ||
+    (typeof genvm?.error_description === "string" ? genvm.error_description : "") ||
+    (typeof genvm?.stderr === "string" ? genvm.stderr : "") ||
+    legacy?.errorMessage ||
+    legacy?.message ||
+    "";
+
   // Contract guards carry a stable [EXPECTED] / [TRANSIENT] prefix.
-  const cleaned = raw.replace(/^\[(EXPECTED|TRANSIENT|EXTERNAL|LLM_ERROR)\]\s*/, "");
+  const cleaned = String(raw)
+    .replace(/^\[(EXPECTED|TRANSIENT|EXTERNAL|LLM_ERROR)\]\s*/, "")
+    .trim();
   return cleaned || "The contract rejected this transaction.";
 }
 

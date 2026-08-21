@@ -105,7 +105,13 @@ export interface Resolution {
   sufficient?: boolean;
   observed_summary?: string;
   reason?: string;
+  /** When the resolve transaction ran (consensus clock). */
   resolved_at?: string;
+  /** The predetermined instant the price was observed AT — equal to the
+   * market's resolution_start for price markets, "0" for event markets. This
+   * is the settlement datum; resolved_at is merely when someone pressed the
+   * button. */
+  observed_at?: string;
   row_count?: number;
   rows: SourceRow[];
 }
@@ -145,5 +151,8 @@ export interface TxState {
   phase: TxPhase;
   hash?: string;
   error?: string;
+  /** Classified reason for a failed write (see lib/tx.ts). Lets the UI render
+   * "the resolution window has expired" as a distinct, explained state. */
+  errorKind?: string;
   note?: string;
 }

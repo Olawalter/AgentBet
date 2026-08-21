@@ -40,9 +40,11 @@ and readable flag in order. So a dishonest leader cannot agree on "YES" while
 writing a fabricated record of what it read.
 
 Note what is deliberately *not* delegated to a model: for price markets no model
-is asked what the price is or what the answer should be. Validators fetch four
-independent feeds; **contract arithmetic** corroborates them and compares the
-median to the threshold. The model's judgment is used only where the question is
+is asked what the price is or what the answer should be. Validators fetch three
+independent feeds for the price **at the market's predetermined observation
+instant** (`resolution_start`, fixed at creation); **contract arithmetic**
+corroborates them and compares the median to the threshold. Running the
+resolution earlier or later inside the window cannot change the answer. The model's judgment is used only where the question is
 genuinely semantic (`EVENT_CLAIM`), and even there it is structurally validated
 and gated.
 
@@ -74,11 +76,16 @@ holds throughout, reaching exactly zero when every position has settled.
 
 ### 6. How does resolution work?
 
-Per market, at resolution: fetch each bound source; record url, readable flag,
-excerpt, `sha256(excerpt)` and the extracted observation; then
+Resolution is legal only inside `[resolution_start, resolution_deadline]`;
+after the deadline the sole exit is the recovery/refund path. Per market, at
+resolution: fetch each bound source; record url, readable flag, excerpt,
+`sha256(excerpt)` and the extracted observation; then
 
-- **`SPOT_THRESHOLD`** — require at least two readings corroborating within 1%,
-  take the median, and compare it to the threshold in Python;
+- **`SPOT_THRESHOLD`** — fetch each operator's candle **for the market's
+  observation instant**, discard any whose own timestamp falls outside
+  `[instant, instant + 300s]`, require at least two of the survivors to
+  corroborate within 1%, take the median, and compare it to the threshold in
+  Python;
 - **`EVENT_CLAIM`** — put only the fetched text in front of the model, wrapped in
   fences the prompt names as untrusted, and require a structured verdict.
 
@@ -88,8 +95,9 @@ uncorroborated, contradictory or inconclusive yields `UNRESOLVED`.
 
 ### 7. What authoritative data is used?
 
-Four independent operators for BTC/USD: Gemini, Bitfinex, CoinGecko and
-blockchain.info. These are **contract constants**. The market creator chooses a
+Three independent operators for BTC/USD: Bitfinex, Gemini and CoinGecko,
+queried for the **historical candle at the market's observation instant**.
+These are **contract constants**. The market creator chooses a
 *subject*, never a URL, so an interested party cannot point the market at bytes
 they control. Event markets may cite specific pages but only on an allowlist of
 independent publishers (Reuters, AP, BBC, SEC, Federal Reserve, europa.eu, NASA,
@@ -162,7 +170,7 @@ npm install
 cp .env.example .env              # add OWNER_PK and BETTOR_PK (funded StudioNet keys)
 npm run probe                     # prove the feeds are reachable from validators
 npm run lifecycle                 # full lifecycle with balance assertions
-npm run state -- 1                # dump market #1: terms, record, digests
+npm run state -- 2                # dump market #2: terms, record, digests
 ```
 
 For the UI: `cd web && npm install && npm run dev`, set
